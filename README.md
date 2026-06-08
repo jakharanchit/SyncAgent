@@ -43,7 +43,9 @@ Your PostgreSQL schema is also **completely up to you**. SyncAgent inserts into 
 sqlite3 "path/to/your.db" ".read sql/sqlite-syncagent.sql"
 ```
 
-This adds the `sync_status` and `schema_version` tables. Your application tables are separate — create them however you normally would.
+This adds the `sync_status` and `schema_version` tables and sets WAL journal mode. Your application tables are separate — create them however you normally would.
+
+SyncAgent also enforces WAL mode automatically on startup, so existing databases are migrated without any manual step.
 
 ### 2. Queue records for sync
 
@@ -53,6 +55,8 @@ After every INSERT into a business table, also insert into `sync_status`:
 INSERT OR IGNORE INTO sync_status (record_id, table_name)
 VALUES ('<primary_key_value>', '<table_name>');
 ```
+
+> **Primary key ordering:** SyncAgent sends each batch to PostgreSQL in `record_id ASC` order inside a single transaction. If your PostgreSQL schema uses foreign-key constraints across tables (e.g. `tests` references `sessions`), your primary-key values must sort in dependency order so parent records are inserted before their children. Time-ordered keys such as ULIDs or UUID v7 satisfy this naturally, since parent records are always created first.
 
 ### 3. Create the matching PostgreSQL tables
 

@@ -6,6 +6,11 @@
 -- Compatible with: SyncAgent v1.x
 -- Infrastructure schema version: 1
 
+-- ── Journal mode ──────────────────────────────────────────────────────────────
+-- WAL mode allows SyncAgent and your application to write to the database
+-- concurrently without blocking each other. Set once; persists in the DB file.
+PRAGMA journal_mode=WAL;
+
 -- ── SyncAgent queue ───────────────────────────────────────────────────────────
 -- Your application inserts one row here for every record it wants synced.
 -- SyncAgent reads this table each cycle to know what to push to PostgreSQL.

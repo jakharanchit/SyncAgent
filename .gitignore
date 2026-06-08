@@ -26,6 +26,7 @@ station.db
 station.db-shm
 station.db-wal
 Station.db
+station.db-journal
 sync-health.json
 sync-health.json.tmp
 logs/

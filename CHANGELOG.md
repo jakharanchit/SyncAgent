@@ -2,15 +2,26 @@
 
 All notable changes to OpCore SyncAgent are documented here.
 
+## [1.0.1] — 2026-06-08
+
+### Fixed
+- **SQLite WAL mode now enforced on startup.** `SQLiteReader.EnsureWalModeAsync` is called in `VerifyStartupAsync` and issues `PRAGMA journal_mode=WAL`. This prevents `SQLITE_BUSY` (database is locked) errors when the client application and SyncAgent write to the same database file concurrently. Previously, WAL mode was only set by `sql/sqlite-syncagent.sql`; existing databases that were initialised without WAL were never automatically migrated.
+
+### Changed
+- `sql/sqlite-syncagent.sql` now includes `PRAGMA journal_mode=WAL` so newly initialised databases get WAL mode immediately from the setup script as well.
+- Startup log now confirms WAL mode is active at `Debug` level (`SQLite journal mode: WAL`). A `Warning` is emitted if WAL mode cannot be set (e.g. database on a network share that does not support WAL).
+
+---
+
 ## [1.0.0] — 2026-06-05
 
 ### Added
 - Initial release.
-- SQLite-to-PostgreSQL sync for four entity types: sessions, tests, measurements, audit_log.
+- Generic SQLite-to-PostgreSQL sync for any table configuration defined in `syncagent.json`. No code change or redeployment needed to add, remove, or rename tables.
 - Configurable batch size (default 100 records per cycle) and poll interval (default 30 s).
 - 10-step exponential backoff with ±10% jitter: 30 s → 60 s → 2 min → 5 min → 15 min → 1 hr (×5).
 - Dead-letter state (`synced=2`) after MaxRetries exhausted — record frozen until manually reset.
-- Idempotent writes via `ON CONFLICT (primary_key) DO NOTHING` on all four PostgreSQL tables.
+- Idempotent writes via `ON CONFLICT (primary_key) DO NOTHING` on every configured table.
 - Atomic health file (`sync-health.json`) written via `.tmp` → rename after every cycle.
 - Schema version check on startup — refuses to run if SQLite schema does not match expected version.
 - Windows Service support via `UseWindowsService()` (auto-starts at boot, recoverable).

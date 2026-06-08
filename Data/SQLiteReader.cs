@@ -182,6 +182,27 @@ public sealed class SQLiteReader
 
     // ── Startup checks ────────────────────────────────────────────────────────
 
+    // Set WAL journal mode so SyncAgent and the client application can write
+    // concurrently without blocking each other (avoids SQLITE_BUSY errors).
+    // The sql/sqlite-syncagent.sql setup script also sets this, but calling it
+    // here ensures existing databases are migrated automatically on first startup.
+    public async Task EnsureWalModeAsync(CancellationToken ct)
+    {
+        await using var conn = OpenReadWrite();
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode=WAL";
+        var mode = await cmd.ExecuteScalarAsync(ct) as string ?? "";
+
+        if (!mode.Equals("wal", StringComparison.OrdinalIgnoreCase))
+            _logger.LogWarning(
+                "Could not set WAL journal mode (current: {Mode}). " +
+                "Concurrent writes from other processes may cause SQLITE_BUSY errors.",
+                mode);
+        else
+            _logger.LogDebug("SQLite journal mode: WAL");
+    }
+
     public async Task<int> GetSchemaVersionAsync(CancellationToken ct)
     {
         const string sql = "SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1";

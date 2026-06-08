@@ -46,6 +46,8 @@ public sealed class SyncOrchestrator
 
         _logger.LogInformation("SQLite schema version OK: {Version}", schemaVersion);
 
+        await _reader.EnsureWalModeAsync(ct);
+
         if (_config.Tables.Count == 0)
             _logger.LogWarning(
                 "No table mappings configured. Add entries to the Tables array in syncagent.json. " +

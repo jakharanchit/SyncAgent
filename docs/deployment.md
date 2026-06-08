@@ -1,6 +1,6 @@
 # SyncAgent — Deployment Guide
 
-**Version 1.0.0 · Windows x64**
+**Version 1.0.1 · Windows x64**
 
 SyncAgent is a background service that continuously synchronises your station's local database to the central server. Once installed it requires no interaction — it starts with Windows, recovers from network outages automatically, and writes a health status file your application can read at any time.
 
@@ -10,7 +10,7 @@ SyncAgent is a background service that continuously synchronises your station's 
 
 You will need:
 
-- The delivery package: `SyncAgent-v1.0.0-win-x64-selfcontained.zip`
+- The delivery package: `SyncAgent-v1.0.1-win-x64-selfcontained.zip`
 - Administrator access on the station machine
 - The PostgreSQL connection string for your central server
 - The full path to the station's SQLite database file
@@ -43,7 +43,7 @@ sql\
 
 ## 2. Prepare the SQLite Database
 
-SyncAgent adds two tables to your station database — `sync_status` and `schema_version`. Run this once per station:
+SyncAgent adds two tables to your station database — `sync_status` and `schema_version` — and sets WAL journal mode so SyncAgent and your application can write to the database concurrently. Run this once per station:
 
 ```powershell
 sqlite3 "C:\<path-to-your>\station.db" ".read `"C:\Program Files\SyncAgent\sql\sqlite-syncagent.sql`""
@@ -53,11 +53,13 @@ Confirm it worked:
 
 ```powershell
 sqlite3 "C:\<path-to-your>\station.db" "SELECT version FROM schema_version;"
+# Expected: 1
+
+sqlite3 "C:\<path-to-your>\station.db" "PRAGMA journal_mode;"
+# Expected: wal
 ```
 
-Expected output: `1`
-
-> This script is safe to re-run. It uses `CREATE TABLE IF NOT EXISTS` throughout and will not modify existing data.
+> This script is safe to re-run. It uses `CREATE TABLE IF NOT EXISTS` throughout and will not modify existing data. SyncAgent also enforces WAL mode automatically on every startup, so an existing database that was initialised without it will be migrated on first run.
 
 ---
 
@@ -160,7 +162,7 @@ A healthy startup looks like:
 [INF] SQLite schema version OK: 1
 [INF] Table mappings loaded: sessions→events.sessions
 [INF] PostgreSQL connection verified.
-[INF] SyncAgent startup complete.
+[INF] SyncAgent startup complete. StationId=ST-01 SiteName=Building A — Bay 3
 ```
 
 And the health file:
