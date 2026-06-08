@@ -1,0 +1,115 @@
+{
+  // ── EXAMPLE CONFIGURATION — OpCore test station deployment ──────────────────
+  // This file shows a fully configured SyncAgent for the four standard tables
+  // (sessions, tests, measurements, audit_log) matching the schemas in
+  // sql/examples/sqlite-schema.example.sql and sql/examples/postgres-schema.example.sql
+  //
+  // HOW TO USE THIS FILE:
+  //   1. Copy this file to syncagent.local.json  (it is gitignored)
+  //   2. Replace ST-01, Building A, the connection string, and the paths
+  //      with the real values for this station
+  //   3. Leave syncagent.json untouched — it stays as the committed template
+  //
+  // DO NOT commit syncagent.local.json — it will contain a real password.
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── Node identity ────────────────────────────────────────────────────────────
+  // StationId is injected as station_id into every PostgreSQL row.
+  // Must be unique across all stations writing to the same database.
+  "Station": {
+    "StationId": "ST-01",
+    "SiteName":  "Building A — Station 1"
+  },
+
+  // ── Central database ─────────────────────────────────────────────────────────
+  // Replace <host>, <dbname>, <user>, <password> with your actual values.
+  // For local dev/testing with the Docker container from docs/testing.md:
+  //   Host=localhost;Port=5432;Database=testdata;Username=opcore;Password=opcore_dev_pw
+  "Postgres": {
+    "ConnectionString": "Host=<host>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>"
+  },
+
+  // ── Sync behaviour ───────────────────────────────────────────────────────────
+  "Sync": {
+    "SQLitePath":      "C:\\TestData\\station.db",
+    "IntervalSeconds": 30,
+    "BatchSize":       100,
+    "MaxRetries":      10,
+    "BackoffSeconds":  [30, 60, 120, 300, 900, 3600, 3600, 3600, 3600, 3600],
+    "HealthFilePath":  "C:\\TestData\\sync-health.json"
+  },
+
+  // ── Logging ──────────────────────────────────────────────────────────────────
+  "Logging": {
+    "LogPath":  "C:\\TestData\\logs",
+    "MinLevel": "Information"
+  },
+
+  // ── Table mappings ───────────────────────────────────────────────────────────
+  // Matches the example schema in sql/examples/sqlite-schema.example.sql (SQLite)
+  // and sql/examples/postgres-schema.example.sql (PostgreSQL).
+  //
+  // IMPORTANT — station_id and synced_at are NOT listed here:
+  //   station_id  → injected by SyncAgent at push time (InjectStationId: true below)
+  //   synced_at   → set by PostgreSQL DEFAULT NOW() at insert time
+  // Neither is stored in SQLite; do not add them to TimestampColumns or BooleanColumns.
+  "Tables": [
+
+    // ── sessions ──────────────────────────────────────────────────────────────
+    // SQLite:     sessions (session_id PK, operator_id, work_order, started_at, closed_at, status)
+    // PostgreSQL: events.sessions (same columns + station_id injected + synced_at by PG)
+    {
+      "SourceTable":      "sessions",
+      "TargetTable":      "events.sessions",
+      "PrimaryKey":       "session_id",
+      "InjectStationId":  true,
+      "TimestampColumns": ["started_at", "closed_at"],
+      "BooleanColumns":   []
+    },
+
+    // ── tests ─────────────────────────────────────────────────────────────────
+    // SQLite:     tests (test_id PK, session_id FK, part_serial, test_name, started_at,
+    //                    completed_at, verdict)
+    // PostgreSQL: events.tests (same columns + station_id injected + synced_at by PG)
+    // Note: verdict is TEXT ("PASS"/"FAIL") in both — no conversion needed.
+    {
+      "SourceTable":      "tests",
+      "TargetTable":      "events.tests",
+      "PrimaryKey":       "test_id",
+      "InjectStationId":  true,
+      "TimestampColumns": ["started_at", "completed_at"],
+      "BooleanColumns":   []
+    },
+
+    // ── measurements ──────────────────────────────────────────────────────────
+    // SQLite:     measurements (measurement_id PK, test_id FK, channel_name, value REAL,
+    //                           unit, lower_limit, upper_limit, in_limit INTEGER, captured_at)
+    // PostgreSQL: events.measurements (same + station_id injected + synced_at by PG)
+    //
+    // in_limit is stored as INTEGER (0 or 1) in SQLite but BOOLEAN in PostgreSQL.
+    // List it in BooleanColumns so SyncAgent converts it on push.
+    {
+      "SourceTable":      "measurements",
+      "TargetTable":      "events.measurements",
+      "PrimaryKey":       "measurement_id",
+      "InjectStationId":  true,
+      "TimestampColumns": ["captured_at"],
+      "BooleanColumns":   ["in_limit"]
+    },
+
+    // ── audit_log ─────────────────────────────────────────────────────────────
+    // SQLite:     audit_log (audit_id PK, session_id, operator_id, action, detail,
+    //                        signature, logged_at)
+    // PostgreSQL: audit.audit_log (same columns + station_id injected + synced_at by PG)
+    // Note: session_id here is nullable (audit events can exist without a session).
+    {
+      "SourceTable":      "audit_log",
+      "TargetTable":      "audit.audit_log",
+      "PrimaryKey":       "audit_id",
+      "InjectStationId":  true,
+      "TimestampColumns": ["logged_at"],
+      "BooleanColumns":   []
+    }
+
+  ]
+}

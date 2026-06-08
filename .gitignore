@@ -1,0 +1,43 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Delivery packages — built locally, distributed as GitHub Release assets
+SyncAgent-v*/
+*.zip
+
+# Test tooling — downloaded locally, not part of source
+sqlite3.exe
+
+# Test artefacts
+SyncAgent-TestReport.docx
+
+# Local dev config override — contains real credentials, never commit
+# Developers put actual connection strings here; syncagent.json holds placeholders
+syncagent.local.json
+
+# Production config — contains real credentials, never commit
+appsettings.Production.json
+appsettings.*.json
+
+# Runtime artifacts — per-station, never in source
+station.db
+station.db-shm
+station.db-wal
+Station.db
+sync-health.json
+sync-health.json.tmp
+logs/
+
+# .NET tooling
+*.user
+*.suo
+.vs/
+*.ncrunchproject
+.idea/
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
