@@ -1,7 +1,7 @@
 # SyncAgent — Testing Guide
 
 **Component:** SyncAgent  
-**Version:** 1.0.0
+**Version:** 1.1.0
 
 This guide covers how to set up, inject test data, and verify SyncAgent behaviour across all scenarios on a development machine.
 
@@ -48,10 +48,10 @@ All scenarios work the same way regardless of how you run SyncAgent. Replace `do
 dotnet run --configuration Release
 
 # Framework-dependent package (requires .NET 8 Runtime installed)
-& ".\SyncAgent-v1.0.0-win-x64-frameworkdependent\SyncAgent.exe"
+& ".\SyncAgent-v1.1.0-win-x64-frameworkdependent\SyncAgent.exe"
 
 # Self-contained package (no prerequisites)
-& ".\SyncAgent-v1.0.0-win-x64-selfcontained\SyncAgent.exe"
+& ".\SyncAgent-v1.1.0-win-x64-selfcontained\SyncAgent.exe"
 ```
 
 When using a package, the `station.db`, `syncagent.json`, `sync-health.json`, and `logs/` folder are all relative to the package folder — place them alongside `SyncAgent.exe`.
@@ -378,18 +378,22 @@ SELECT COUNT(*) FROM events.sessions WHERE session_id='t1-1-sess';
 
 ---
 
-## 6. Schema Version Mismatch
+## 6. Schema Check — Missing Table
+
+Verifies SyncAgent refuses to start cleanly if `sync_status` is missing.
 
 ```powershell
-sqlite3 .\station.db "UPDATE schema_version SET version=99;"
+# Rename the table to simulate a missing or uninitialised database
+sqlite3 .\station.db "ALTER TABLE sync_status RENAME TO sync_status_backup;"
 
 dotnet run --configuration Release
 # Expected:
-#   [ERR] Schema version mismatch. SQLite=99 Expected=1. Sync suspended.
+#   [ERR] sync_status table not found. Run sql/sqlite-syncagent.sql to initialise the database.
 #   [FTL] SyncAgent terminated unexpectedly.
 # Process exits immediately — no sync cycle runs.
 
-sqlite3 .\station.db "UPDATE schema_version SET version=1;"
+# Restore
+sqlite3 .\station.db "ALTER TABLE sync_status_backup RENAME TO sync_status;"
 # Subsequent run starts normally.
 ```
 
@@ -431,10 +435,10 @@ Test-Path .\sync-health.json.tmp   # Expected: False
 
 ```powershell
 # Framework-dependent
-cd .\SyncAgent-v1.0.0-win-x64-frameworkdependent\
+cd .\SyncAgent-v1.1.0-win-x64-frameworkdependent\
 
 # OR self-contained (no .NET Runtime required on the target machine)
-cd .\SyncAgent-v1.0.0-win-x64-selfcontained\
+cd .\SyncAgent-v1.1.0-win-x64-selfcontained\
 
 # Edit syncagent.json in this folder with real values before installing.
 

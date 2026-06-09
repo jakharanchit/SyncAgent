@@ -19,8 +19,6 @@ public sealed class SyncConfig
     public int            IntervalSeconds { get; set; } = 30;
     public int            BatchSize       { get; set; } = 100;
     public int            MaxRetries      { get; set; } = 10;
-    public int[]          BackoffSeconds  { get; set; } =
-        [30, 60, 120, 300, 900, 3600, 3600, 3600, 3600, 3600];
     public string         HealthFilePath  { get; set; } = "./sync-health.json";
     public string         LogPath         { get; set; } = "./logs";
     public string         LogMinLevel     { get; set; } = "Information";

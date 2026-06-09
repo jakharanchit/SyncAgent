@@ -1,8 +1,8 @@
 # SyncAgent — Deployment Guide
 
-**Version 1.0.1 · Windows x64**
+**Version 1.1.0 · Windows x64**
 
-SyncAgent is a background service that continuously synchronises your station's local database to the central server. Once installed it requires no interaction — it starts with Windows, recovers from network outages automatically, and writes a health status file your application can read at any time.
+SyncAgent is a background service that continuously synchronises your station's local SQLite database to the central PostgreSQL server. Once installed it requires no interaction — it starts with Windows, recovers from network outages automatically, and writes a health status file your application can read at any time.
 
 ---
 
@@ -10,12 +10,12 @@ SyncAgent is a background service that continuously synchronises your station's 
 
 You will need:
 
-- The delivery package: `SyncAgent-v1.0.1-win-x64-selfcontained.zip`
+- The delivery package: `SyncAgent-v1.1.0-win-x64-selfcontained.zip`
 - Administrator access on the station machine
-- The PostgreSQL connection string for your central server
+- The PostgreSQL connection string for your central server (host, port, database name, username, password)
 - The full path to the station's SQLite database file
 
-For the schema migration steps, you also need `sqlite3.exe`. If it is not already on the machine, download the `sqlite-tools-win-x64` zip from [sqlite.org/download](https://www.sqlite.org/download.html) and extract `sqlite3.exe` anywhere on the PATH.
+The package includes `sqlite3.exe` for the database setup steps below. You do not need to download anything separately.
 
 ---
 
@@ -27,47 +27,54 @@ Unzip the delivery package to a permanent location on the station machine. We re
 C:\Program Files\SyncAgent\
 ```
 
-The folder should contain:
+The folder contains:
 
 ```
 SyncAgent.exe
+sqlite3.exe
 syncagent.json
+syncagent.example.json
 install-service.ps1
 uninstall-service.ps1
 sql\
     sqlite-syncagent.sql
     examples\
+        sqlite-schema.example.sql
+        postgres-schema.example.sql
+ABOUT_THESE_FILES.txt
 ```
 
 ---
 
 ## 2. Prepare the SQLite Database
 
-SyncAgent adds two tables to your station database — `sync_status` and `schema_version` — and sets WAL journal mode so SyncAgent and your application can write to the database concurrently. Run this once per station:
+SyncAgent adds two tables to your station database — `sync_status` and `schema_version` — and enables WAL journal mode so SyncAgent and your application can write to the database at the same time without blocking each other.
+
+Run this once per station (PowerShell):
 
 ```powershell
-sqlite3 "C:\<path-to-your>\station.db" ".read `"C:\Program Files\SyncAgent\sql\sqlite-syncagent.sql`""
+& "C:\Program Files\SyncAgent\sqlite3.exe" "C:\<path-to-your>\station.db" ".read `"C:\Program Files\SyncAgent\sql\sqlite-syncagent.sql`""
 ```
 
 Confirm it worked:
 
 ```powershell
-sqlite3 "C:\<path-to-your>\station.db" "SELECT version FROM schema_version;"
+& "C:\Program Files\SyncAgent\sqlite3.exe" "C:\<path-to-your>\station.db" "SELECT version FROM schema_version;"
 # Expected: 1
 
-sqlite3 "C:\<path-to-your>\station.db" "PRAGMA journal_mode;"
+& "C:\Program Files\SyncAgent\sqlite3.exe" "C:\<path-to-your>\station.db" "PRAGMA journal_mode;"
 # Expected: wal
 ```
 
-> This script is safe to re-run. It uses `CREATE TABLE IF NOT EXISTS` throughout and will not modify existing data. SyncAgent also enforces WAL mode automatically on every startup, so an existing database that was initialised without it will be migrated on first run.
+> **Safe to re-run.** The script uses `CREATE TABLE IF NOT EXISTS` and will not touch existing data. SyncAgent also enables WAL mode automatically on every startup, so an existing database that was not set up with this script will be migrated on first run.
 
 ---
 
 ## 3. Configure syncagent.json
 
-Open `C:\Program Files\SyncAgent\syncagent.json` in any text editor and fill in the fields below. A fully-annotated example is in `syncagent.example.json` alongside it.
+Open `C:\Program Files\SyncAgent\syncagent.json` in any text editor and fill in your values. A fully annotated example with all options is in `syncagent.example.json` alongside it.
 
-### Connection and paths
+### Minimum required changes
 
 ```json
 "Station": {
@@ -89,20 +96,20 @@ Open `C:\Program Files\SyncAgent\syncagent.json` in any text editor and fill in 
 }
 ```
 
-`StationId` is stamped onto every record pushed to the central server, so it must be unique across all stations writing to the same database (e.g. `ST-01`, `ST-02`).
+`StationId` is stamped onto every record pushed to the central server and must be unique across all stations writing to the same database (e.g. `ST-01`, `ST-02`, `ST-03`).
 
 ### Table mappings
 
-Add one entry per SQLite table you want synced. This is the only configuration that affects what data moves and where it lands.
+Add one entry to the `Tables` array for each SQLite table you want synced. This is the only configuration that controls what data moves and where it lands.
 
 ```json
 "Tables": [
   {
-    "SourceTable":      "sessions",
-    "TargetTable":      "events.sessions",
-    "PrimaryKey":       "session_id",
+    "SourceTable":      "your_table",
+    "TargetTable":      "schema.your_table",
+    "PrimaryKey":       "your_id_column",
     "InjectStationId":  true,
-    "TimestampColumns": ["started_at", "closed_at"],
+    "TimestampColumns": ["created_at"],
     "BooleanColumns":   []
   }
 ]
@@ -138,21 +145,21 @@ SyncAgent service installed and started.
 STATE : 4  RUNNING
 ```
 
-SyncAgent is now running and will start automatically at every boot. The service is configured to restart itself if it exits unexpectedly.
+SyncAgent is now running and will start automatically at every boot. The service is configured to restart itself if it exits unexpectedly (up to 3 times with a 60-second delay between attempts).
 
 ---
 
 ## 5. Verify the Installation
 
 ```powershell
-# Confirm the service is running
 sc.exe query "SyncAgent"
+# STATE : 4  RUNNING
 ```
 
-Then check the log file for a clean startup (adjust the date):
+Check the log file for a clean startup:
 
 ```powershell
-Get-Content "C:\<path-to-your>\logs\syncagent-2026-01-01.log" -Tail 20
+Get-ChildItem "C:\<path-to-your>\logs\" | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 20
 ```
 
 A healthy startup looks like:
@@ -160,12 +167,12 @@ A healthy startup looks like:
 ```
 [INF] SyncAgent starting. StationId=ST-01 SiteName=Building A — Bay 3 Interval=30s
 [INF] SQLite schema version OK: 1
-[INF] Table mappings loaded: sessions→events.sessions
+[INF] Table mappings loaded: your_table→schema.your_table
 [INF] PostgreSQL connection verified.
 [INF] SyncAgent startup complete. StationId=ST-01 SiteName=Building A — Bay 3
 ```
 
-And the health file:
+Check the health file:
 
 ```powershell
 Get-Content "C:\<path-to-your>\sync-health.json" | ConvertFrom-Json
@@ -194,19 +201,35 @@ Get-Content "C:\<path-to-your>\sync-health.json" | ConvertFrom-Json
 
 ---
 
+## Updating to a New Version
+
+1. Stop the service: `sc.exe stop SyncAgent`
+2. Uninstall: `.\uninstall-service.ps1`
+3. Replace all files in the install folder with the new package contents
+4. Keep your existing `syncagent.json` — check the release notes for any new fields
+5. Reinstall: `.\install-service.ps1`
+
+---
+
 ## Troubleshooting
 
 **Service fails to start**
-Check the log file first. The most common causes are an incorrect `SQLitePath` (file does not exist at the configured path) or a missing `schema_version` table (the SQLite migration in step 2 was not run on this database).
+Check the log file first. The most common causes:
+- `SQLitePath` does not exist — create and initialise the database (Step 2)
+- `schema_version` table missing — the SQLite migration script was not run, or was run against a different database file
+- PostgreSQL connection string is wrong — the service starts anyway and retries, so check `sync-health.json` for `postgresReachable: false`
 
 **`postgresReachable: false` in health file**
-SyncAgent will continue retrying — records are not lost. Confirm the station can reach the PostgreSQL server on port 5432. Check firewall rules and the VPN connection if applicable. Verify the connection string in `syncagent.json` has the correct hostname, port, and credentials.
+Records are not lost — SyncAgent continues to buffer them in SQLite and will flush automatically when connectivity is restored. To diagnose:
+- Confirm the station can reach the PostgreSQL server: `Test-NetConnection <host> -Port 5432`
+- Check firewall rules and VPN connection if applicable
+- Verify the connection string has the correct host, port, database name, and credentials
 
 **`pendingCount` keeps growing**
-This is the offline-operation mode — records are accumulating in SQLite while the server is unreachable. Once connectivity is restored SyncAgent will flush the backlog automatically, oldest records first.
+This is normal offline-operation behaviour. Records accumulate in SQLite while the server is unreachable. Once connectivity is restored SyncAgent flushes the backlog automatically, oldest records first.
 
 **Dead-letter records (`deadLetterCount > 0`)**
-A record has failed to sync after 10 attempts and has been frozen. The `failure_reason` column in the station's `sync_status` table shows the specific error. After resolving the underlying issue, reset the record and restart:
+A record failed to sync after 10 attempts and has been frozen to prevent infinite retries. The `failure_reason` column in `sync_status` shows the specific error. After fixing the root cause:
 
 ```sql
 UPDATE sync_status
@@ -214,10 +237,14 @@ SET    synced = 0, retry_count = 0, next_attempt = NULL, failure_reason = NULL
 WHERE  synced = 2;
 ```
 
+Then restart the service:
 ```powershell
 sc.exe stop SyncAgent
 sc.exe start SyncAgent
 ```
 
 **A table is not syncing**
-Confirm the table has an entry in the `Tables` array in `syncagent.json` and that the `SourceTable` name matches exactly. Restart the service after any configuration change.
+Confirm the table has an entry in the `Tables` array in `syncagent.json` and that `SourceTable` matches the SQLite table name exactly (case-insensitive). Restart the service after any configuration change.
+
+**Multi-station setup**
+Each station has its own `station.db` and its own SyncAgent installation with a unique `StationId`. All stations push to the same PostgreSQL server. The `station_id` column on every PostgreSQL row identifies which station the record came from.

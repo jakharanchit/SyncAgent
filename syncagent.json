@@ -1,58 +1,21 @@
 {
-  // ── Node identity ────────────────────────────────────────────────────────────
-  // NodeId is injected into every row pushed to PostgreSQL when InjectStationId
-  // is true on a table mapping. Must be unique across all nodes writing to the
-  // same PostgreSQL database. Leave empty if your tables already carry a node/
-  // station identifier or if InjectStationId is false on all tables.
   "Station": {
     "StationId": "",
-    "SiteName":  ""
+    "SiteName": ""
   },
-
-  // ── Central database ─────────────────────────────────────────────────────────
   "Postgres": {
     "ConnectionString": "Host=<host>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>"
   },
-
-  // ── Sync behaviour ───────────────────────────────────────────────────────────
   "Sync": {
-    "SQLitePath":      "./local.db",
+    "SQLitePath": "./local.db",
     "IntervalSeconds": 30,
-    "BatchSize":       100,
-    "MaxRetries":      10,
-    "BackoffSeconds":  [30, 60, 120, 300, 900, 3600, 3600, 3600, 3600, 3600],
-    "HealthFilePath":  "./sync-health.json"
+    "BatchSize": 100,
+    "MaxRetries": 10,
+    "HealthFilePath": "./sync-health.json"
   },
-
-  // ── Logging ──────────────────────────────────────────────────────────────────
   "Logging": {
-    "LogPath":  "./logs",
+    "LogPath": "./logs",
     "MinLevel": "Information"
   },
-
-  // ── Table mappings ───────────────────────────────────────────────────────────
-  // One entry per SQLite table you want synced to PostgreSQL.
-  // No code change or redeployment is needed to add or remove tables —
-  // just edit this array and restart the service.
-  //
-  // Fields:
-  //   SourceTable      — table name in the local SQLite database
-  //   TargetTable      — destination in PostgreSQL, as "schema.table" or just "table"
-  //   PrimaryKey       — column used for ON CONFLICT and sync_status.record_id
-  //   InjectStationId  — if true, adds Station.StationId as "station_id" on every INSERT
-  //                      set false if your table already has a station/node identifier
-  //   TimestampColumns — TEXT columns in SQLite that map to TIMESTAMPTZ in PostgreSQL
-  //   BooleanColumns   — INTEGER 0/1 columns in SQLite that map to BOOLEAN in PostgreSQL
-  //
-  // Example entry:
-  //
-  // {
-  //   "SourceTable":      "orders",
-  //   "TargetTable":      "public.orders",
-  //   "PrimaryKey":       "order_id",
-  //   "InjectStationId":  false,
-  //   "TimestampColumns": ["created_at", "shipped_at"],
-  //   "BooleanColumns":   ["is_paid"]
-  // }
   "Tables": []
 }

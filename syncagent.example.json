@@ -35,7 +35,6 @@
     "IntervalSeconds": 30,
     "BatchSize":       100,
     "MaxRetries":      10,
-    "BackoffSeconds":  [30, 60, 120, 300, 900, 3600, 3600, 3600, 3600, 3600],
     "HealthFilePath":  "C:\\TestData\\sync-health.json"
   },
 

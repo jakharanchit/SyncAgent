@@ -10,8 +10,6 @@ public sealed class SQLiteReader
     private readonly string               _dbPath;
     private readonly ILogger<SQLiteReader> _logger;
 
-    private const int ExpectedSchemaVersion = 1;
-
     public SQLiteReader(SyncConfig config, ILogger<SQLiteReader> logger)
     {
         _dbPath = config.SQLitePath;
@@ -182,6 +180,31 @@ public sealed class SQLiteReader
 
     // ── Startup checks ────────────────────────────────────────────────────────
 
+    // Columns SyncAgent reads or writes on every cycle.
+    // If any are missing the service cannot function and refuses to start.
+    private static readonly string[] RequiredColumns =
+        ["record_id", "table_name", "synced", "retry_count",
+         "next_attempt", "failure_reason", "last_attempt"];
+
+    // Verifies sync_status exists and has the columns SyncAgent needs.
+    // Returns missing column names; empty array = schema is good.
+    public async Task<string[]> VerifySchemaAsync(CancellationToken ct)
+    {
+        await using var conn = OpenReadOnly();
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(sync_status)";
+
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            found.Add(reader.GetString(1)); // column 1 = name
+
+        // Empty result means the table does not exist at all.
+        // Return all required columns as "missing" so the caller gets one clear error.
+        return RequiredColumns.Where(c => !found.Contains(c)).ToArray();
+    }
+
     // Set WAL journal mode so SyncAgent and the client application can write
     // concurrently without blocking each other (avoids SQLITE_BUSY errors).
     // The sql/sqlite-syncagent.sql setup script also sets this, but calling it
@@ -201,19 +224,6 @@ public sealed class SQLiteReader
                 mode);
         else
             _logger.LogDebug("SQLite journal mode: WAL");
-    }
-
-    public async Task<int> GetSchemaVersionAsync(CancellationToken ct)
-    {
-        const string sql = "SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1";
-
-        await using var conn = OpenReadOnly();
-        await conn.OpenAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return result is long v ? (int)v : 0;
     }
 
     public async Task<int> GetDeadLetterCountAsync(CancellationToken ct)

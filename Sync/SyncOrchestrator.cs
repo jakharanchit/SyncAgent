@@ -7,8 +7,6 @@ namespace SyncAgent.Sync;
 
 public sealed class SyncOrchestrator
 {
-    private const int ExpectedSchemaVersion = 1;
-
     private readonly SQLiteReader                _reader;
     private readonly PostgresWriter              _writer;
     private readonly RetryPolicy                 _retry;
@@ -34,17 +32,18 @@ public sealed class SyncOrchestrator
     // Postgres unreachable → warns only (station may start offline).
     public async Task VerifyStartupAsync(CancellationToken ct)
     {
-        var schemaVersion = await _reader.GetSchemaVersionAsync(ct);
-        if (schemaVersion != ExpectedSchemaVersion)
+        var missingColumns = await _reader.VerifySchemaAsync(ct);
+        if (missingColumns.Length > 0)
         {
-            _logger.LogError(
-                "Schema version mismatch. SQLite={Local} Expected={Expected}. Sync suspended.",
-                schemaVersion, ExpectedSchemaVersion);
-            throw new InvalidOperationException(
-                $"Schema version mismatch: got {schemaVersion}, expected {ExpectedSchemaVersion}");
+            var missing = string.Join(", ", missingColumns);
+            var message = missingColumns.Length == 7
+                ? "sync_status table not found. Run sql/sqlite-syncagent.sql to initialise the database."
+                : $"sync_status table is missing required columns: {missing}. Re-run sql/sqlite-syncagent.sql.";
+            _logger.LogError("{Message}", message);
+            throw new InvalidOperationException(message);
         }
 
-        _logger.LogInformation("SQLite schema version OK: {Version}", schemaVersion);
+        _logger.LogInformation("SQLite schema OK.");
 
         await _reader.EnsureWalModeAsync(ct);
 

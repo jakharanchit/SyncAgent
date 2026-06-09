@@ -24,12 +24,13 @@ sync-health.json  ←────  your app reads to display sync status
 
 ## The Contract
 
-SyncAgent has exactly two requirements of the client's SQLite database:
+SyncAgent has exactly one requirement of the client's SQLite database:
 
 | Requirement | Description |
 |---|---|
 | `sync_status` table | Your application inserts one row here per record to be synced |
-| `schema_version` table | Populated by `sql/sqlite-syncagent.sql` — SyncAgent checks this at startup |
+
+At startup SyncAgent verifies that `sync_status` exists and has the columns it needs. If any column is missing it refuses to start and logs exactly which columns are missing. Run `sql/sqlite-syncagent.sql` to create the table.
 
 Your application's own tables are **completely up to you**. SyncAgent reads them generically using `SELECT *` filtered by the primary key.
 
@@ -114,6 +115,8 @@ All configuration lives in **`syncagent.json`**.
 | `Sync.BatchSize` | `100` | Max records pushed per cycle |
 | `Sync.MaxRetries` | `10` | Attempts before a record is dead-lettered |
 | `Sync.HealthFilePath` | `./sync-health.json` | Written after every cycle for external monitoring |
+
+> **Retry backoff** is computed automatically: 30 s → 60 s → 2 min → 4 min → … capped at 1 hour, ±10% jitter. There is no config knob for this.
 | `Logging.LogPath` | `./logs` | Rolling log directory |
 | `Logging.MinLevel` | `Information` | `Debug` / `Information` / `Warning` / `Error` |
 | `Tables` | `[]` | Table mappings — see below |

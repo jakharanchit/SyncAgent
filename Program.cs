@@ -59,8 +59,6 @@ try
                 IntervalSeconds = int.TryParse(cfg["Sync:IntervalSeconds"], out var iv) ? iv : 30,
                 BatchSize       = int.TryParse(cfg["Sync:BatchSize"],       out var bs) ? bs : 100,
                 MaxRetries      = int.TryParse(cfg["Sync:MaxRetries"],      out var mr) ? mr : 10,
-                BackoffSeconds  = cfg.GetSection("Sync:BackoffSeconds").Get<int[]>()
-                                  ?? [30, 60, 120, 300, 900, 3600, 3600, 3600, 3600, 3600],
                 HealthFilePath  = cfg["Sync:HealthFilePath"]   ?? "./sync-health.json",
                 PostgresConnStr = cfg["Postgres:ConnectionString"] ?? "",
                 StationId       = cfg["Station:StationId"]     ?? "",
