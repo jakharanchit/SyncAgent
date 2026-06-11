@@ -10,23 +10,25 @@
   //      with the real values for this station
   //   3. Leave syncagent.json untouched — it stays as the committed template
   //
-  // DO NOT commit syncagent.local.json — it will contain a real password.
+  // SECRETS: For production deployments, prefer passing the connection string via
+  // the SYNCAGENT_Postgres__ConnectionString environment variable rather than
+  // storing it in a file on disk. SyncAgent will warn at startup if it detects
+  // a plaintext password in the config file and no env var override.
   // ────────────────────────────────────────────────────────────────────────────
 
   // ── Node identity ────────────────────────────────────────────────────────────
-  // StationId is injected as station_id into every PostgreSQL row.
-  // Must be unique across all stations writing to the same database.
   "Station": {
     "StationId": "ST-01",
     "SiteName":  "Building A — Station 1"
   },
 
   // ── Central database ─────────────────────────────────────────────────────────
-  // Replace <host>, <dbname>, <user>, <password> with your actual values.
-  // For local dev/testing with the Docker container from docs/testing.md:
-  //   Host=localhost;Port=5432;Database=testdata;Username=opcore;Password=opcore_dev_pw
+  // TLS / SSL: add SslMode to enforce encrypted transport. Recommended values:
+  //   SslMode=Require       — enforce TLS, no certificate verification
+  //   SslMode=VerifyFull    — enforce TLS and verify server certificate (best)
+  //   SslMode=Disable       — no TLS (only for isolated LANs; not recommended)
   "Postgres": {
-    "ConnectionString": "Host=<host>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>"
+    "ConnectionString": "Host=<host>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>;SslMode=Require"
   },
 
   // ── Sync behaviour ───────────────────────────────────────────────────────────
@@ -35,72 +37,135 @@
     "IntervalSeconds": 30,
     "BatchSize":       100,
     "MaxRetries":      10,
-    "HealthFilePath":  "C:\\TestData\\sync-health.json"
+    "HealthFilePath":  "C:\\TestData\\sync-health.json",
+
+    // Timeout in seconds for individual PostgreSQL commands.
+    // Prevents a slow or hung query from blocking the sync loop. Default: 30.
+    "CommandTimeoutSeconds": 30,
+
+    // Delete synced rows older than this many days. Default: 0 (disabled).
+    // Recommended for 24/7 stations to prevent sync_status growing unboundedly.
+    "PruneAfterDays": 30,
+
+    // HTTP health endpoint port. GET http://localhost:{port}/health/ returns the
+    // health JSON — useful for Prometheus, Datadog, and load-balancer checks.
+    // Default: 0 (disabled). No elevation needed for localhost on Windows.
+    "HealthEndpointPort": 9091
   },
 
   // ── Logging ──────────────────────────────────────────────────────────────────
   "Logging": {
-    "LogPath":  "C:\\TestData\\logs",
-    "MinLevel": "Information"
+    "LogPath":      "C:\\TestData\\logs",
+    "MinLevel":     "Information",
+    "RetentionDays": 30
+  },
+
+  // ── Alerting ──────────────────────────────────────────────────────────────────
+  // POST a JSON dead-letter alert to this URL. Works with Slack, Teams, PagerDuty,
+  // or any HTTP endpoint accepting JSON. Leave empty to disable.
+  "Alerts": {
+    "WebhookUrl": ""
   },
 
   // ── Table mappings ───────────────────────────────────────────────────────────
-  // Matches the example schema in sql/examples/sqlite-schema.example.sql (SQLite)
-  // and sql/examples/postgres-schema.example.sql (PostgreSQL).
   //
-  // IMPORTANT — station_id and synced_at are NOT listed here:
-  //   station_id  → injected by SyncAgent at push time (InjectStationId: true below)
-  //   synced_at   → set by PostgreSQL DEFAULT NOW() at insert time
-  // Neither is stored in SQLite; do not add them to TimestampColumns or BooleanColumns.
+  // Each entry supports:
+  //
+  //   SourceTable        — SQLite table to read from
+  //   TargetTable        — PostgreSQL table to write to (schema.table or just table)
+  //   PrimaryKey         — Single PK column name (use PrimaryKeys for composite)
+  //   PrimaryKeys        — Array of columns for composite PKs: ["device_id","seq_no"]
+  //                        record_id in sync_status stores concatenated values joined
+  //                        by PrimaryKeySeparator (default "|"). Your SQLite trigger
+  //                        must write the same concatenated string as record_id.
+  //   PrimaryKeySeparator — Separator for composite key values (default "|")
+  //   InjectStationId    — Append station_id column on INSERT (default true)
+  //   TimestampColumns   — Columns that need ::timestamptz cast in PostgreSQL
+  //   BooleanColumns     — SQLite INTEGER (0/1) columns mapped to PG BOOLEAN
+  //   ExcludeColumns     — SQLite columns to omit from the PostgreSQL INSERT
+  //                        (e.g. local-only UI blobs with no Postgres counterpart)
+  //   ColumnMap          — Rename columns: { "sqlite_name": "pg_name" }
+  //                        e.g. { "ts": "created_at" } writes SQLite "ts" as "created_at"
+  //   ConflictStrategy   — "nothing" (default, silently ignore duplicates)
+  //                        "update"  (ON CONFLICT DO UPDATE — upsert all non-PK columns)
+  //   SyncDeletes        — When true, also propagate DELETEs to PostgreSQL.
+  //                        Requires a delete-log table and a SQLite trigger (see below).
+  //   DeleteLogTable     — Name of the delete-log table. Defaults to "{SourceTable}_deletes".
+  //
+  // ── Delete propagation setup (SyncDeletes: true) ─────────────────────────────
+  //
+  // 1. Create the delete-log table in SQLite:
+  //      CREATE TABLE IF NOT EXISTS sessions_deletes (
+  //          record_id  TEXT    NOT NULL,
+  //          deleted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  //          synced     INTEGER NOT NULL DEFAULT 0
+  //      );
+  //
+  // 2. Create a DELETE trigger on the source table:
+  //      CREATE TRIGGER sessions_delete_log
+  //      AFTER DELETE ON sessions
+  //      BEGIN
+  //          INSERT INTO sessions_deletes (record_id) VALUES (OLD.session_id);
+  //      END;
+  //
+  //    For composite PKs, concatenate with the PrimaryKeySeparator:
+  //      INSERT INTO measurements_deletes (record_id)
+  //      VALUES (OLD.device_id || '|' || OLD.sequence_no);
+  //
+  // ── Admin CLI ─────────────────────────────────────────────────────────────────
+  //
+  //   syncagent --version               Print version and exit
+  //   syncagent --status                Print pending/dead-letter counts per table
+  //   syncagent --reset-dead-letters    Reset all dead-letter records to pending
+  //   syncagent --reset-dead-letters --table=measurements
+  //                                     Reset dead-letters for one table only
+  //   syncagent --dry-run               Log what would sync, write nothing, then exit
+  //
   "Tables": [
 
     // ── sessions ──────────────────────────────────────────────────────────────
-    // SQLite:     sessions (session_id PK, operator_id, work_order, started_at, closed_at, status)
-    // PostgreSQL: events.sessions (same columns + station_id injected + synced_at by PG)
     {
       "SourceTable":      "sessions",
       "TargetTable":      "events.sessions",
       "PrimaryKey":       "session_id",
       "InjectStationId":  true,
       "TimestampColumns": ["started_at", "closed_at"],
-      "BooleanColumns":   []
+      "BooleanColumns":   [],
+      "ConflictStrategy": "nothing"
     },
 
     // ── tests ─────────────────────────────────────────────────────────────────
-    // SQLite:     tests (test_id PK, session_id FK, part_serial, test_name, started_at,
-    //                    completed_at, verdict)
-    // PostgreSQL: events.tests (same columns + station_id injected + synced_at by PG)
-    // Note: verdict is TEXT ("PASS"/"FAIL") in both — no conversion needed.
+    // ConflictStrategy "update" — if a test result is corrected in SQLite,
+    // the updated verdict is pushed to PostgreSQL on the next sync cycle.
     {
       "SourceTable":      "tests",
       "TargetTable":      "events.tests",
       "PrimaryKey":       "test_id",
       "InjectStationId":  true,
       "TimestampColumns": ["started_at", "completed_at"],
-      "BooleanColumns":   []
+      "BooleanColumns":   [],
+      "ConflictStrategy": "update"
     },
 
     // ── measurements ──────────────────────────────────────────────────────────
-    // SQLite:     measurements (measurement_id PK, test_id FK, channel_name, value REAL,
-    //                           unit, lower_limit, upper_limit, in_limit INTEGER, captured_at)
-    // PostgreSQL: events.measurements (same + station_id injected + synced_at by PG)
-    //
-    // in_limit is stored as INTEGER (0 or 1) in SQLite but BOOLEAN in PostgreSQL.
-    // List it in BooleanColumns so SyncAgent converts it on push.
+    // ExcludeColumns: "raw_adc" is local-only calibration data; no PG counterpart.
+    // ColumnMap: SQLite uses "ts" but PostgreSQL expects "captured_at".
+    // SyncDeletes: corrected measurements can be deleted and re-inserted.
     {
       "SourceTable":      "measurements",
       "TargetTable":      "events.measurements",
       "PrimaryKey":       "measurement_id",
       "InjectStationId":  true,
-      "TimestampColumns": ["captured_at"],
-      "BooleanColumns":   ["in_limit"]
+      "TimestampColumns": ["ts"],
+      "BooleanColumns":   ["in_limit"],
+      "ExcludeColumns":   ["raw_adc"],
+      "ColumnMap":        { "ts": "captured_at" },
+      "ConflictStrategy": "update",
+      "SyncDeletes":      true,
+      "DeleteLogTable":   "measurements_deletes"
     },
 
     // ── audit_log ─────────────────────────────────────────────────────────────
-    // SQLite:     audit_log (audit_id PK, session_id, operator_id, action, detail,
-    //                        signature, logged_at)
-    // PostgreSQL: audit.audit_log (same columns + station_id injected + synced_at by PG)
-    // Note: session_id here is nullable (audit events can exist without a session).
     {
       "SourceTable":      "audit_log",
       "TargetTable":      "audit.audit_log",
@@ -108,6 +173,20 @@
       "InjectStationId":  true,
       "TimestampColumns": ["logged_at"],
       "BooleanColumns":   []
+    },
+
+    // ── composite PK example ──────────────────────────────────────────────────
+    // A high-frequency table keyed on (device_id, sequence_no).
+    // sync_status.record_id stores "dev1|42" (PrimaryKeySeparator = "|").
+    // Your SQLite trigger must write: OLD.device_id || '|' || CAST(OLD.sequence_no AS TEXT)
+    {
+      "SourceTable":        "sensor_readings",
+      "TargetTable":        "events.sensor_readings",
+      "PrimaryKeys":        ["device_id", "sequence_no"],
+      "PrimaryKeySeparator": "|",
+      "InjectStationId":    true,
+      "TimestampColumns":   ["captured_at"],
+      "BooleanColumns":     []
     }
 
   ]

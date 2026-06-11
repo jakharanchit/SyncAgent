@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using SyncAgent.Config;
 using SyncAgent.Data.Models;
@@ -14,7 +15,8 @@ public sealed class HealthReporter
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        WriteIndented = true
+        WriteIndented          = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private static readonly string AgentVersion =
@@ -27,17 +29,33 @@ public sealed class HealthReporter
         _logger         = logger;
     }
 
-    public async Task WriteAsync(CycleResult result, CancellationToken ct)
+    /// <param name="result">Cycle outcome.</param>
+    /// <param name="syncedTotal">Cumulative records synced since service start.</param>
+    /// <param name="cycleDurationMs">Wall-clock duration of the last cycle in milliseconds.</param>
+    public async Task WriteAsync(
+        CycleResult result, long syncedTotal, long cycleDurationMs, CancellationToken ct)
     {
         var report = new
         {
-            stationId          = _stationId,
-            lastCycleAt        = DateTime.UtcNow.ToString("O"),
-            lastSyncedAt       = result.LastSyncedAt?.ToString("O"),
-            pendingCount       = result.StillPending,
-            deadLetterCount    = result.DeadLetterCount,
-            postgresReachable  = result.PostgresReachable,
-            agentVersion       = AgentVersion
+            stationId           = _stationId,
+            lastCycleAt         = DateTime.UtcNow.ToString("O"),
+            lastSyncedAt        = result.LastSyncedAt?.ToString("O"),
+            pendingCount        = result.StillPending,
+            deadLetterCount     = result.DeadLetterCount,
+            postgresReachable   = result.PostgresReachable,
+            infraDeferredCount  = result.Deferred,
+            lastInfraErrorAt    = result.LastInfraErrorAt?.ToString("O"),
+            syncedTotal         = syncedTotal,
+            lastCycleDurationMs = cycleDurationMs,
+            agentVersion        = AgentVersion,
+            tables              = result.TableStats.Count > 0
+                ? result.TableStats.Select(t => new
+                    {
+                        name       = t.TableName,
+                        pending    = t.Pending,
+                        deadLetter = t.DeadLetter
+                    }).ToArray()
+                : null
         };
 
         await WriteAtomicAsync(JsonSerializer.Serialize(report, JsonOptions), ct);
@@ -60,7 +78,7 @@ public sealed class HealthReporter
         await WriteAtomicAsync(JsonSerializer.Serialize(report, JsonOptions), ct);
     }
 
-    // Write to .tmp then rename — LabVIEW never reads a partial file
+    // Write to .tmp then rename — readers never see a partial file
     private async Task WriteAtomicAsync(string json, CancellationToken ct)
     {
         try

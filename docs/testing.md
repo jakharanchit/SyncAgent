@@ -1,7 +1,7 @@
 # SyncAgent — Testing Guide
 
 **Component:** SyncAgent  
-**Version:** 1.1.0
+**Version:** 1.2.0
 
 This guide covers how to set up, inject test data, and verify SyncAgent behaviour across all scenarios on a development machine.
 
@@ -10,13 +10,18 @@ SyncAgent is table-agnostic — it syncs any SQLite tables you configure in the 
 | Scenario | What it tests |
 |---|---|
 | [1. Happy path](#1-happy-path--all-four-tables) | All four table types sync from SQLite → PostgreSQL |
-| [2. Offline + recovery](#2-offline--recovery) | Postgres unreachable during writes; records synced on reconnect |
+| [2. Offline + recovery](#2-offline--recovery) | Postgres unreachable during writes; records synced on reconnect without consuming retries |
 | [3. Retry and backoff](#3-retry-and-backoff) | Failed writes increment retry_count; next_attempt honoured |
 | [4. Dead letter](#4-dead-letter) | Record exhausts MaxRetries; synced=2, never retried again |
 | [5. Idempotency](#5-idempotency--duplicate-sends) | Re-sending already-synced records is a silent no-op |
-| [6. Schema version mismatch](#6-schema-version-mismatch) | SyncAgent refuses to start if SQLite schema version is wrong |
-| [7. Health file](#7-health-file-verification) | sync-health.json is written atomically after every cycle |
-| [8. Windows Service](#8-windows-service-installuninstall) | Install and run as OS service |
+| [6. Schema check](#6-schema-check--missing-table) | SyncAgent refuses to start if sync_status is missing |
+| [7. Health file](#7-health-file-verification) | sync-health.json written atomically; new fields verified |
+| [8. Upsert](#8-upsert--conflictstrategy-update) | ConflictStrategy="update" overwrites existing rows |
+| [9. Column exclusion & remapping](#9-column-exclusion--remapping) | ExcludeColumns and ColumnMap applied on INSERT |
+| [10. Delete propagation](#10-delete-propagation) | SyncDeletes=true mirrors DELETEs to PostgreSQL |
+| [11. Dry run](#11-dry-run) | --dry-run logs what would sync, writes nothing, exits |
+| [12. Admin CLI](#12-admin-cli) | --status and --reset-dead-letters |
+| [13. Windows Service](#13-windows-service-installuninstall) | Install and run as OS service |
 
 ---
 
@@ -36,25 +41,6 @@ Verify installs:
 dotnet --version   # 8.x.x or higher
 docker --version
 ```
-
----
-
-## Running against the packaged deliverables vs. source
-
-All scenarios work the same way regardless of how you run SyncAgent. Replace `dotnet run --configuration Release` with the path to the packaged binary as needed:
-
-```powershell
-# From source
-dotnet run --configuration Release
-
-# Framework-dependent package (requires .NET 8 Runtime installed)
-& ".\SyncAgent-v1.1.0-win-x64-frameworkdependent\SyncAgent.exe"
-
-# Self-contained package (no prerequisites)
-& ".\SyncAgent-v1.1.0-win-x64-selfcontained\SyncAgent.exe"
-```
-
-When using a package, the `station.db`, `syncagent.json`, `sync-health.json`, and `logs/` folder are all relative to the package folder — place them alongside `SyncAgent.exe`.
 
 ---
 
@@ -85,40 +71,18 @@ docker exec syncagent-test-postgres pg_isready -U opcore -d testdata
 Get-Content sql\examples\postgres-schema.example.sql | docker exec -i syncagent-test-postgres psql -U opcore -d testdata
 ```
 
-This creates the `events`, `audit`, and `core` schemas plus all example tables. Adjust to your own schema if you are not using the example tables.
-
 ### Prepare the SQLite station database
 
 ```powershell
 sqlite3 .\station.db ".read sql\sqlite-syncagent.sql"
 sqlite3 .\station.db ".read sql\examples\sqlite-schema.example.sql"
-sqlite3 .\station.db "SELECT version FROM schema_version;"
-# Expected: 1
 sqlite3 .\station.db "PRAGMA journal_mode;"
 # Expected: wal
 ```
 
-`sqlite-syncagent.sql` sets WAL journal mode automatically. WAL allows SyncAgent and your test scripts to write to the database concurrently without blocking each other. If you are working with an existing database that was created before this change, set it once:
-
-```powershell
-sqlite3 .\station.db "PRAGMA journal_mode=WAL;"
-# Expected: wal
-```
-
-> **No sqlite3 CLI?** Open DB Browser for SQLite → New Database → `station.db` → Execute SQL → paste `sql/sqlite-syncagent.sql`, then `sql/examples/sqlite-schema.example.sql`.
-
 ### Configure syncagent.local.json
 
-`syncagent.json` ships with placeholder values. Create a `syncagent.local.json` alongside it (gitignored) to override them with your local credentials:
-
-```powershell
-Copy-Item .\syncagent.json .\syncagent.local.json
-# Edit syncagent.local.json — set Postgres:ConnectionString, Station:StationId, Station:SiteName
-```
-
-Only the keys you need to override must be in `syncagent.local.json`; everything else falls through to `syncagent.json`.
-
-Recommended values for local testing:
+Create `syncagent.local.json` (gitignored) to override the template values:
 
 ```json
 {
@@ -128,13 +92,13 @@ Recommended values for local testing:
 }
 ```
 
-Setting `IntervalSeconds` to 5 makes cycles run faster during testing so you do not have to wait 30 seconds per scenario.
+Setting `IntervalSeconds` to 5 makes cycles run faster during testing.
 
 ---
 
 ## Configuring Tables
 
-SyncAgent syncs whatever tables you list in the `Tables` array in `syncagent.json`. No code change or rebuild is needed to add, remove, or rename tables — edit the array and restart.
+SyncAgent syncs whatever tables you list in the `Tables` array. No rebuild needed — edit the array and restart.
 
 ```json
 "Tables": [
@@ -143,52 +107,47 @@ SyncAgent syncs whatever tables you list in the `Tables` array in `syncagent.jso
     "TargetTable":      "schema.your_table",
     "PrimaryKey":       "your_id_column",
     "InjectStationId":  true,
-    "TimestampColumns": ["created_at", "updated_at"],
-    "BooleanColumns":   ["is_active"]
+    "TimestampColumns": ["created_at"],
+    "BooleanColumns":   ["is_active"],
+    "ConflictStrategy": "nothing"
   }
 ]
 ```
 
-The example `syncagent.example.json` shows a fully-configured four-table setup. The scenarios below use that configuration.
+The `syncagent.example.json` shows a fully-configured four-table setup. Scenarios below use that configuration.
 
 ---
 
 ## Record ID Ordering — Important Note
 
-SyncAgent reads `sync_status` in `ORDER BY record_id ASC` and sends each batch to PostgreSQL in that order inside a single transaction. If your PostgreSQL schema has foreign-key constraints between tables (e.g. `tests` references `sessions`), your primary-key values must sort in dependency order — sessions must have a smaller key than the tests that reference them, which must be smaller than measurements.
-
-The simplest way to guarantee this is to use **time-ordered primary keys** (ULIDs, UUID v7, or a timestamp-prefixed value). Since sessions are always created before their tests, time-ordered keys naturally sort in the correct dependency order.
-
-The test data in the scenarios below uses prefixed IDs (`t1-1-sess`, `t1-2-test`, `t1-3-meas`) to make this ordering explicit. In production, ULIDs handle this automatically.
+SyncAgent reads `sync_status` in `ORDER BY record_id ASC` and sends each batch to PostgreSQL in that order. If your PostgreSQL schema has foreign-key constraints between tables, your primary-key values must sort in dependency order. The test data below uses prefixed IDs (`t1-1-sess`, `t1-2-test`, `t1-3-meas`) to make this explicit.
 
 ---
 
 ## 1. Happy Path — All Four Tables
 
-Insert one record of each type plus their `sync_status` rows. The foreign key chain is `sessions → tests → measurements`; `audit_log` is independent.
-
 ```powershell
 sqlite3 .\station.db @'
 INSERT INTO sessions VALUES (
     't1-1-sess', 'OP-001', 'WO-2026-001',
-    '2026-06-08T10:00:00', '2026-06-08T10:30:00', 'CLOSED'
+    '2026-06-10T10:00:00', '2026-06-10T10:30:00', 'CLOSED'
 );
 INSERT INTO tests VALUES (
     't1-2-test', 't1-1-sess',
     'SN-ABC-001', 'Voltage Check',
-    '2026-06-08T10:01:00', '2026-06-08T10:02:00', 'PASS'
+    '2026-06-10T10:01:00', '2026-06-10T10:02:00', 'PASS'
 );
 INSERT INTO measurements VALUES (
     't1-3-meas', 't1-2-test',
     'CH1_VOLTAGE', 12.04, 'V',
     11.5, 12.5, 1,
-    '2026-06-08T10:01:30'
+    '2026-06-10T10:01:30'
 );
 INSERT INTO audit_log VALUES (
     't1-4-aud', 't1-1-sess',
     'OP-001', 'SESSION_CLOSED',
     'Closed by operator after passing test', NULL,
-    '2026-06-08T10:03:00'
+    '2026-06-10T10:03:00'
 );
 INSERT INTO sync_status (record_id, table_name) VALUES
     ('t1-1-sess', 'sessions'),
@@ -204,45 +163,34 @@ Run SyncAgent:
 dotnet run --configuration Release
 ```
 
-**Expected console output after one cycle:**
+**Expected cycle log:**
 ```
-[HH:mm:ss INF] SyncAgent starting. StationId=ST-TEST SiteName=Test Factory Interval=5s
-[HH:mm:ss INF] SQLite schema version OK: 1
-[HH:mm:ss INF] Table mappings loaded: sessions→events.sessions, tests→events.tests, measurements→events.measurements, audit_log→audit.audit_log
-[HH:mm:ss INF] PostgreSQL connection verified.
-[HH:mm:ss DBG] Batch committed: 4 records
-[HH:mm:ss INF] Cycle complete. Synced=4 Pending=0 Failed=0 DeadLetter=0
+[INF] Cycle complete. Synced=4 Deleted=0 Pending=0 Failed=0 Deferred=0 DeadLetter=0 Duration=<N>ms
 ```
 
-**Verify SQLite sync_status:**
-
+**Verify SQLite:**
 ```powershell
 sqlite3 .\station.db "SELECT record_id, table_name, synced FROM sync_status;"
 # Expected: all four rows show synced=1
 ```
 
 **Verify PostgreSQL:**
-
 ```powershell
 docker exec syncagent-test-postgres psql -U opcore -d testdata -c "
-SELECT session_id, station_id, operator_id, status, synced_at FROM events.sessions;
-SELECT test_id, station_id, verdict, synced_at FROM events.tests;
-SELECT measurement_id, channel_name, value, in_limit, synced_at FROM events.measurements;
-SELECT audit_id, station_id, action, synced_at FROM audit.audit_log;
+SELECT session_id, station_id, status FROM events.sessions;
+SELECT test_id, station_id, verdict FROM events.tests;
+SELECT measurement_id, value, in_limit FROM events.measurements;
+SELECT audit_id, station_id, action FROM audit.audit_log;
 "
 ```
 
-Key checks:
-- `station_id` on every row (SyncAgent injected this — not present in SQLite)
-- `synced_at` is recent (set by PostgreSQL `DEFAULT NOW()`)
-- `in_limit` is a proper `BOOLEAN` (`t`/`f`), not `0`/`1` — SyncAgent converted it
-- All four tables have exactly one row each
+Key checks: `station_id` on every row; `in_limit` is BOOLEAN (`t`/`f`), not `0`/`1`.
 
 ---
 
 ## 2. Offline + Recovery
 
-Verifies records accumulate in SQLite while PostgreSQL is unreachable, then flush on reconnect.
+Verifies records accumulate in SQLite while PostgreSQL is unreachable and **do not consume retries** (infrastructure failures are deferred, not retried).
 
 ```powershell
 docker stop syncagent-test-postgres
@@ -250,21 +198,23 @@ docker stop syncagent-test-postgres
 sqlite3 .\station.db @'
 INSERT INTO sessions VALUES (
     't2-1-sess', 'OP-002', 'WO-2026-002',
-    '2026-06-08T11:00:00', NULL, 'OPEN'
+    '2026-06-10T11:00:00', NULL, 'OPEN'
 );
-INSERT INTO sync_status (record_id, table_name)
-VALUES ('t2-1-sess', 'sessions');
+INSERT INTO sync_status (record_id, table_name) VALUES ('t2-1-sess', 'sessions');
 '@
 
 dotnet run --configuration Release
-# Expected: [WRN] PostgreSQL unreachable at startup.
-# Ctrl+C to stop
+# Expected: [WRN] PostgreSQL unreachable...  Deferred=1, retry_count stays 0
+# Ctrl+C
+
+sqlite3 .\station.db "SELECT record_id, synced, retry_count FROM sync_status WHERE record_id='t2-1-sess';"
+# Expected: synced=0, retry_count=0  (NOT incremented — infrastructure failure)
 
 docker start syncagent-test-postgres
 Start-Sleep -Seconds 5
 
 dotnet run --configuration Release
-# Expected: Cycle complete. Synced=1 Pending=0 Failed=0 DeadLetter=0
+# Expected: Cycle complete. Synced=1 Pending=0
 
 sqlite3 .\station.db "SELECT record_id, synced FROM sync_status WHERE record_id='t2-1-sess';"
 # Expected: synced=1
@@ -274,88 +224,65 @@ sqlite3 .\station.db "SELECT record_id, synced FROM sync_status WHERE record_id=
 
 ## 3. Retry and Backoff
 
-Verifies `next_attempt` is respected — a record is not retried until its backoff window expires.
-
 ```powershell
-# Insert a record with next_attempt far in the future
 sqlite3 .\station.db @'
 INSERT INTO sessions VALUES (
     't3-1-sess', 'OP-003', NULL,
-    '2026-06-08T12:00:00', NULL, 'OPEN'
+    '2026-06-10T12:00:00', NULL, 'OPEN'
 );
 INSERT INTO sync_status (record_id, table_name, synced, retry_count, next_attempt, failure_reason)
-VALUES (
-    't3-1-sess', 'sessions',
-    0, 1, datetime('now', '+1 hour'), 'Simulated prior failure'
-);
+VALUES ('t3-1-sess', 'sessions', 0, 1, datetime('now', '+1 hour'), 'Simulated prior failure');
 '@
 
 dotnet run --configuration Release
-# Record must NOT appear in cycle output — next_attempt is in the future.
-# If there are no other pending records, there will be no "Cycle complete" line at all.
+# Record must NOT appear — next_attempt is in the future.
 # Ctrl+C
 
-sqlite3 .\station.db "SELECT synced, retry_count, next_attempt FROM sync_status WHERE record_id='t3-1-sess';"
-# Expected: synced=0, retry_count=1, next_attempt still in future
-
-# Fast-forward next_attempt to now
+# Fast-forward next_attempt
 sqlite3 .\station.db "UPDATE sync_status SET next_attempt=datetime('now','-1 second') WHERE record_id='t3-1-sess';"
 
 dotnet run --configuration Release
-# Expected: Cycle complete. Synced=1 Pending=0 Failed=0 DeadLetter=0
-
-sqlite3 .\station.db "SELECT synced, retry_count FROM sync_status WHERE record_id='t3-1-sess';"
-# Expected: synced=1, retry_count=1 (carried over from prior attempt)
+# Expected: Cycle complete. Synced=1
 ```
 
 ---
 
 ## 4. Dead Letter
 
-Verifies a record reaching `MaxRetries` (default: 10) is permanently moved to `synced=2`.
-
 ```powershell
-# Insert record at retry 9 (one attempt from dead letter)
 sqlite3 .\station.db @'
 INSERT INTO sessions VALUES (
     't4-1-sess', 'OP-004', NULL,
-    '2026-06-08T13:00:00', NULL, 'OPEN'
+    '2026-06-10T13:00:00', NULL, 'OPEN'
 );
 INSERT INTO sync_status (record_id, table_name, synced, retry_count, next_attempt, failure_reason)
-VALUES (
-    't4-1-sess', 'sessions',
-    0, 9, datetime('now', '-1 second'), 'Approaching dead letter'
-);
+VALUES ('t4-1-sess', 'sessions', 0, 9, datetime('now', '-1 second'), 'Approaching dead letter');
 '@
 
 docker stop syncagent-test-postgres
 
 dotnet run --configuration Release
-# Expected:
-#   [ERR] DeadLetter: t4-1-sess table=sessions after 10 retries.
-#   [INF] Cycle complete. Synced=0 Pending=1 Failed=1 DeadLetter=1
+# Expected: [ERR] DeadLetter: t4-1-sess  →  Cycle complete. DeadLetter=1
 
-sqlite3 .\station.db "SELECT record_id, synced, retry_count FROM sync_status WHERE record_id='t4-1-sess';"
+sqlite3 .\station.db "SELECT synced, retry_count FROM sync_status WHERE record_id='t4-1-sess';"
 # Expected: synced=2, retry_count=10
 
 Get-Content .\sync-health.json | ConvertFrom-Json
 # Expected: deadLetterCount=1, postgresReachable=false
 ```
 
-**Manual recovery after fixing the root cause:**
+**Recovery using the CLI:**
 
 ```powershell
-sqlite3 .\station.db @"
-UPDATE sync_status
-SET synced=0, retry_count=0, next_attempt=NULL, failure_reason=NULL
-WHERE record_id='t4-1-sess';
-"@
-
 docker start syncagent-test-postgres
 Start-Sleep -Seconds 5
 
+dotnet run --configuration Release -- --reset-dead-letters
+# Or with the packaged binary: .\SyncAgent.exe --reset-dead-letters
+# Expected: Reset 1 dead-letter record(s) to pending.
+
 dotnet run --configuration Release
-# Expected: Cycle complete. Synced=1 Pending=0 Failed=0 DeadLetter=0
+# Expected: Cycle complete. Synced=1
 ```
 
 ---
@@ -363,38 +290,28 @@ dotnet run --configuration Release
 ## 5. Idempotency — Duplicate Sends
 
 ```powershell
-# Reset an already-synced record to pending
 sqlite3 .\station.db "UPDATE sync_status SET synced=0, retry_count=0, next_attempt=NULL WHERE record_id='t1-1-sess';"
 
 dotnet run --configuration Release
-# Expected: Cycle complete. Synced=1 Pending=0 — no error
+# Expected: Cycle complete. Synced=1 — no error
 
-# Verify no duplicate row in PostgreSQL
 docker exec syncagent-test-postgres psql -U opcore -d testdata -t -c "
 SELECT COUNT(*) FROM events.sessions WHERE session_id='t1-1-sess';
 "
-# Expected: 1
+# Expected: 1 (no duplicate)
 ```
 
 ---
 
 ## 6. Schema Check — Missing Table
 
-Verifies SyncAgent refuses to start cleanly if `sync_status` is missing.
-
 ```powershell
-# Rename the table to simulate a missing or uninitialised database
 sqlite3 .\station.db "ALTER TABLE sync_status RENAME TO sync_status_backup;"
 
 dotnet run --configuration Release
-# Expected:
-#   [ERR] sync_status table not found. Run sql/sqlite-syncagent.sql to initialise the database.
-#   [FTL] SyncAgent terminated unexpectedly.
-# Process exits immediately — no sync cycle runs.
+# Expected: [ERR] sync_status table not found.  Process exits immediately.
 
-# Restore
 sqlite3 .\station.db "ALTER TABLE sync_status_backup RENAME TO sync_status;"
-# Subsequent run starts normally.
 ```
 
 ---
@@ -406,16 +323,26 @@ dotnet run --configuration Release
 Get-Content .\sync-health.json | ConvertFrom-Json
 ```
 
-Expected shape:
+Expected shape (v1.2.0):
 ```json
 {
-  "stationId":         "ST-TEST",
-  "lastCycleAt":       "2026-06-08T10:32:15.0000000Z",
-  "lastSyncedAt":      null,
-  "pendingCount":      0,
-  "deadLetterCount":   0,
-  "postgresReachable": true,
-  "agentVersion":      "1.0.0.0"
+  "stationId":            "ST-TEST",
+  "lastCycleAt":          "2026-06-10T10:32:15.0000000Z",
+  "lastSyncedAt":         "2026-06-10T10:32:14.0000000Z",
+  "pendingCount":         0,
+  "deadLetterCount":      0,
+  "postgresReachable":    true,
+  "infraDeferredCount":   0,
+  "lastInfraErrorAt":     null,
+  "syncedTotal":          4,
+  "lastCycleDurationMs":  52,
+  "agentVersion":         "1.2.0.0",
+  "tables": [
+    { "name": "sessions",     "pending": 0, "deadLetter": 0 },
+    { "name": "tests",        "pending": 0, "deadLetter": 0 },
+    { "name": "measurements", "pending": 0, "deadLetter": 0 },
+    { "name": "audit_log",    "pending": 0, "deadLetter": 0 }
+  ]
 }
 ```
 
@@ -424,23 +351,173 @@ Verify no partial file left behind:
 Test-Path .\sync-health.json.tmp   # Expected: False
 ```
 
-> **Note on `postgresReachable`:** this field reflects the most recent *write attempt*, not a periodic ping. If there are no pending records, SyncAgent returns early without contacting PostgreSQL, so `postgresReachable` will remain `true` from the previous successful cycle. This is by design — no unnecessary connections are made when there is nothing to sync.
+---
+
+## 8. Upsert — ConflictStrategy: "update"
+
+Add `"ConflictStrategy": "update"` to a table mapping (e.g. `tests`). Run Scenario 1 to insert initial data, then update a field in SQLite and re-queue the record.
+
+```powershell
+sqlite3 .\station.db @'
+UPDATE tests SET verdict='FAIL' WHERE test_id='t1-2-test';
+UPDATE sync_status SET synced=0, retry_count=0, next_attempt=NULL WHERE record_id='t1-2-test';
+'@
+
+dotnet run --configuration Release
+# Expected: Cycle complete. Synced=1
+```
+
+**Verify the row was updated in PostgreSQL:**
+```powershell
+docker exec syncagent-test-postgres psql -U opcore -d testdata -t -c "
+SELECT verdict FROM events.tests WHERE test_id='t1-2-test';
+"
+# Expected: FAIL  (was PASS before upsert)
+```
+
+With `ConflictStrategy: "nothing"` (default), re-queueing the same record would be a silent no-op and the verdict would remain `PASS`.
 
 ---
 
-## 8. Windows Service Install/Uninstall
+## 9. Column Exclusion & Remapping
 
-> **Requires Administrator PowerShell.**  
-> Use the packaged deliverable folders — the install script must sit next to `SyncAgent.exe`.
+Add to the `measurements` table mapping:
+```json
+"ExcludeColumns": ["raw_adc"],
+"ColumnMap":      { "ts": "captured_at" }
+```
+
+(If your `measurements` table has a `raw_adc` column in SQLite and uses `ts` instead of `captured_at`.)
+
+Insert a measurement with a `raw_adc` value, run SyncAgent, then verify in PostgreSQL:
 
 ```powershell
-# Framework-dependent
-cd .\SyncAgent-v1.1.0-win-x64-frameworkdependent\
+docker exec syncagent-test-postgres psql -U opcore -d testdata -t -c "
+SELECT column_name FROM information_schema.columns
+WHERE table_name='measurements' AND table_schema='events';
+"
+# Verify: raw_adc is NOT a column (excluded), captured_at IS present (renamed from ts)
+```
 
-# OR self-contained (no .NET Runtime required on the target machine)
-cd .\SyncAgent-v1.1.0-win-x64-selfcontained\
+---
 
-# Edit syncagent.json in this folder with real values before installing.
+## 10. Delete Propagation
+
+Requires `SyncDeletes: true` on a table mapping and a delete-log table + trigger in SQLite.
+
+**Setup:**
+```powershell
+sqlite3 .\station.db @'
+CREATE TABLE IF NOT EXISTS measurements_deletes (
+    record_id  TEXT    NOT NULL,
+    deleted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    synced     INTEGER NOT NULL DEFAULT 0
+);
+CREATE TRIGGER IF NOT EXISTS measurements_delete_log
+AFTER DELETE ON measurements
+BEGIN
+    INSERT INTO measurements_deletes (record_id) VALUES (OLD.measurement_id);
+END;
+'@
+```
+
+**Test:**
+```powershell
+# Delete the measurement record from SQLite
+sqlite3 .\station.db "DELETE FROM measurements WHERE measurement_id='t1-3-meas';"
+
+dotnet run --configuration Release
+# Expected: Cycle complete. Deleted=1
+```
+
+**Verify in PostgreSQL:**
+```powershell
+docker exec syncagent-test-postgres psql -U opcore -d testdata -t -c "
+SELECT COUNT(*) FROM events.measurements WHERE measurement_id='t1-3-meas';
+"
+# Expected: 0 (row deleted)
+```
+
+**Verify delete-log marked synced:**
+```powershell
+sqlite3 .\station.db "SELECT record_id, synced FROM measurements_deletes;"
+# Expected: synced=1
+```
+
+---
+
+## 11. Dry Run
+
+```powershell
+sqlite3 .\station.db @'
+INSERT INTO sessions VALUES (
+    't11-1-sess', 'OP-011', NULL,
+    '2026-06-10T14:00:00', NULL, 'OPEN'
+);
+INSERT INTO sync_status (record_id, table_name) VALUES ('t11-1-sess', 'sessions');
+'@
+
+dotnet run --configuration Release -- --dry-run
+# Expected:
+#   [INF] --dry-run flag detected. SyncAgent will read and log pending records but write nothing.
+#   [INF] [DRY RUN] Would sync 1 records for table sessions
+#   [INF] Dry run complete. Stopping.
+# Process exits after one cycle.
+
+sqlite3 .\station.db "SELECT synced FROM sync_status WHERE record_id='t11-1-sess';"
+# Expected: synced=0  (nothing written)
+
+docker exec syncagent-test-postgres psql -U opcore -d testdata -t -c "
+SELECT COUNT(*) FROM events.sessions WHERE session_id='t11-1-sess';
+"
+# Expected: 0  (not inserted)
+```
+
+---
+
+## 12. Admin CLI
+
+### --status
+
+```powershell
+dotnet run --configuration Release -- --status
+```
+
+Expected output:
+```
+Table                     Pending  DeadLetter  Last synced
+----------------------------------------------------------------------
+sessions                        0           0  2026-06-10T10:32:14
+tests                           0           0  2026-06-10T10:32:14
+measurements                    0           0  2026-06-10T10:32:14
+audit_log                       0           0  2026-06-10T10:32:14
+----------------------------------------------------------------------
+TOTAL                           0           0
+```
+
+### --reset-dead-letters
+
+```powershell
+# Create a dead-letter record first (see Scenario 4), then:
+dotnet run --configuration Release -- --reset-dead-letters
+# Expected: Reset 1 dead-letter record(s) to pending.
+
+# Scope to one table:
+dotnet run --configuration Release -- --reset-dead-letters --table=sessions
+# Expected: Reset 1 dead-letter record(s) in table 'sessions' to pending.
+```
+
+---
+
+## 13. Windows Service Install/Uninstall
+
+> **Requires Administrator PowerShell.**  
+> Use the packaged deliverable folder — the install script must sit next to `SyncAgent.exe`.
+
+```powershell
+cd .\SyncAgent-v1.2.0-win-x64-selfcontained\
+
+# Edit syncagent.json with real values before installing.
 
 .\install-service.ps1
 
@@ -455,19 +532,16 @@ Get-ChildItem .\logs\
 sc.exe query SyncAgent   # service no longer found
 ```
 
-The install script sets up automatic restart on failure (3 attempts, 60-second delay) and configures the service to start automatically at boot.
-
 ---
 
 ## Resetting Test State
-
-Run this between scenarios to start from a clean slate:
 
 **SQLite — wipe all data:**
 
 ```powershell
 sqlite3 .\station.db @'
 DELETE FROM sync_status;
+DELETE FROM measurements_deletes;
 DELETE FROM measurements;
 DELETE FROM audit_log;
 DELETE FROM tests;
@@ -475,7 +549,7 @@ DELETE FROM sessions;
 '@
 ```
 
-**Or recreate the DB entirely (also resets WAL files):**
+**Or recreate the DB entirely:**
 
 ```powershell
 Remove-Item .\station.db, .\station.db-wal, .\station.db-shm -ErrorAction SilentlyContinue
@@ -487,7 +561,7 @@ sqlite3 .\station.db ".read sql\examples\sqlite-schema.example.sql"
 
 ```powershell
 docker exec syncagent-test-postgres psql -U opcore -d testdata -c "
-TRUNCATE events.measurements, events.tests, events.sessions, audit.audit_log, core.station_sync_state RESTART IDENTITY CASCADE;
+TRUNCATE events.measurements, events.tests, events.sessions, audit.audit_log RESTART IDENTITY CASCADE;
 "
 ```
 
@@ -505,7 +579,7 @@ Remove-Item -Recurse -Force .\logs -ErrorAction SilentlyContinue
 |---|---|---|
 | 0 | Pending | Written locally, not yet pushed to PostgreSQL |
 | 1 | Synced | Confirmed in PostgreSQL — will not be retried |
-| 2 | Dead Letter | Exhausted all retries — requires manual review and reset |
+| 2 | Dead Letter | Exhausted all retries due to data errors — requires manual review and reset |
 
 ## Backoff Schedule
 
@@ -519,4 +593,4 @@ Remove-Item -Recurse -Force .\logs -ErrorAction SilentlyContinue
 | 6–10 | 1 hr each | ~5.5 hrs total |
 | 10 | Dead Letter | — |
 
-All waits include ±10% jitter to prevent a thundering herd when multiple stations reconnect simultaneously.
+All waits include ±10% jitter. Infrastructure failures (network down, connection refused) are **not counted** as retries — a station offline for days will have all its records ready to sync the moment connectivity is restored.

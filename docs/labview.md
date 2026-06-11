@@ -1,6 +1,6 @@
 # SyncAgent — LabVIEW Integration Guide
 
-**Version 1.1.0 · LabVIEW 2019 SP1+, Windows 10/11**
+**Version 1.2.0 · LabVIEW 2019 SP1+, Windows 10/11**
 
 This guide shows how to write data from LabVIEW to a local SQLite database so SyncAgent can pick it up and push it to the central PostgreSQL server.
 
@@ -147,7 +147,11 @@ SyncAgent writes `sync-health.json` after every cycle. LabVIEW can read this fil
 | `deadLetterCount` | int | Records that exhausted all retries — require manual action |
 | `lastSyncedAt` | string (ISO 8601 UTC) or null | When a record was last successfully pushed |
 | `lastCycleAt` | string (ISO 8601 UTC) | When SyncAgent last ran a cycle |
+| `infraDeferredCount` | int | Records deferred this cycle due to network/connection failure (not counted as retries) |
+| `syncedTotal` | int | Cumulative records synced since service start |
+| `lastCycleDurationMs` | int | Wall-clock duration of the most recent cycle in milliseconds |
 | `agentVersion` | string | SyncAgent version |
+| `tables` | array | Per-table `{name, pending, deadLetter}` counts |
 
 ### Reading the file in LabVIEW
 
@@ -164,7 +168,12 @@ Unflatten From JSON ──► (json_string, SyncStatus.ctl) ──► SyncStatus
 | pendingCount | I32 | `pendingCount` |
 | deadLetterCount | I32 | `deadLetterCount` |
 | lastSyncedAt | String | `lastSyncedAt` |
+| infraDeferredCount | I32 | `infraDeferredCount` |
+| syncedTotal | I32 | `syncedTotal` |
+| lastCycleDurationMs | I32 | `lastCycleDurationMs` |
 | agentVersion | String | `agentVersion` |
+
+Include only the fields your front panel displays — `Unflatten From JSON` ignores JSON keys that have no matching cluster element.
 
 Place the read inside a **Timed Loop** (15 000 ms is a reasonable interval). Wrap the Read in an error case — if the file does not exist yet (SyncAgent hasn't completed its first cycle), return a default cluster with `postgresReachable = FALSE`.
 

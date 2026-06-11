@@ -1,6 +1,6 @@
 # SyncAgent — Linux Deployment Guide
 
-**Version:** 1.0.0
+**Version:** 1.2.0
 
 ---
 
@@ -222,8 +222,8 @@ journalctl -u syncagent -f
 Expected output after first cycle:
 ```
 [HH:mm:ss INF] SyncAgent starting. StationId=ST-LX-01 SiteName=Building A Interval=30s
-[HH:mm:ss INF] SQLite schema version OK: 1
 [HH:mm:ss INF] PostgreSQL connection verified.
+[HH:mm:ss INF] Schema validation: all configured tables present.
 ```
 
 Check the health file:
@@ -407,7 +407,43 @@ services:
 
 ---
 
+## Admin CLI
+
+SyncAgent includes admin commands that run once and exit without starting the sync service. Run them as the `opcore` user (or root) from the install directory:
+
+```bash
+cd /opt/syncagent
+
+# Print version
+./SyncAgent --version
+
+# Show per-table pending and dead-letter counts
+./SyncAgent --status
+
+# Reset all dead-letter records to pending
+./SyncAgent --reset-dead-letters
+
+# Reset dead-letters for one table only
+./SyncAgent --reset-dead-letters --table=measurements
+
+# Log what would sync without writing anything to PostgreSQL
+./SyncAgent --dry-run
+```
+
+---
+
 ## Dead-Letter Recovery on Linux
+
+Use the CLI to reset dead-letter records after fixing the root cause:
+
+```bash
+cd /opt/syncagent
+./SyncAgent --reset-dead-letters
+
+sudo systemctl restart syncagent
+```
+
+Or directly in SQLite if the CLI is unavailable:
 
 ```bash
 sqlite3 /var/testdata/station.db \

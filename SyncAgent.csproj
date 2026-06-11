@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>SyncAgent</AssemblyName>
     <RootNamespace>SyncAgent</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Authors>OpCore</Authors>
     <Description>SyncAgent — SQLite to PostgreSQL background sync service for test stations</Description>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>

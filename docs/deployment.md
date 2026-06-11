@@ -1,6 +1,6 @@
 # SyncAgent — Deployment Guide
 
-**Version 1.1.0 · Windows x64**
+**Version 1.2.0 · Windows x64**
 
 SyncAgent is a background service that continuously synchronises your station's local SQLite database to the central PostgreSQL server. Once installed it requires no interaction — it starts with Windows, recovers from network outages automatically, and writes a health status file your application can read at any time.
 
@@ -10,7 +10,7 @@ SyncAgent is a background service that continuously synchronises your station's 
 
 You will need:
 
-- The delivery package: `SyncAgent-v1.1.0-win-x64-selfcontained.zip`
+- The delivery package: `SyncAgent-v1.2.0-win-x64-selfcontained.zip`
 - Administrator access on the station machine
 - The PostgreSQL connection string for your central server (host, port, database name, username, password)
 - The full path to the station's SQLite database file
@@ -48,7 +48,7 @@ ABOUT_THESE_FILES.txt
 
 ## 2. Prepare the SQLite Database
 
-SyncAgent adds two tables to your station database — `sync_status` and `schema_version` — and enables WAL journal mode so SyncAgent and your application can write to the database at the same time without blocking each other.
+SyncAgent adds a `sync_status` table to your station database and enables WAL journal mode so SyncAgent and your application can write to the database at the same time without blocking each other.
 
 Run this once per station (PowerShell):
 
@@ -59,9 +59,6 @@ Run this once per station (PowerShell):
 Confirm it worked:
 
 ```powershell
-& "C:\Program Files\SyncAgent\sqlite3.exe" "C:\<path-to-your>\station.db" "SELECT version FROM schema_version;"
-# Expected: 1
-
 & "C:\Program Files\SyncAgent\sqlite3.exe" "C:\<path-to-your>\station.db" "PRAGMA journal_mode;"
 # Expected: wal
 ```
@@ -83,7 +80,7 @@ Open `C:\Program Files\SyncAgent\syncagent.json` in any text editor and fill in 
 },
 
 "Postgres": {
-  "ConnectionString": "Host=<server>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>"
+  "ConnectionString": "Host=<server>;Port=5432;Database=<dbname>;Username=<user>;Password=<password>;SslMode=Require"
 },
 
 "Sync": {
@@ -98,9 +95,11 @@ Open `C:\Program Files\SyncAgent\syncagent.json` in any text editor and fill in 
 
 `StationId` is stamped onto every record pushed to the central server and must be unique across all stations writing to the same database (e.g. `ST-01`, `ST-02`, `ST-03`).
 
+> **Secret handling:** Avoid storing the database password in `syncagent.json`. Prefer the `SYNCAGENT_Postgres__ConnectionString` environment variable (set it in the service's environment or via a secrets manager). SyncAgent warns at startup if it detects a plaintext password in the config file with no env var override.
+
 ### Table mappings
 
-Add one entry to the `Tables` array for each SQLite table you want synced. This is the only configuration that controls what data moves and where it lands.
+Add one entry to the `Tables` array for each SQLite table you want synced:
 
 ```json
 "Tables": [
@@ -110,7 +109,8 @@ Add one entry to the `Tables` array for each SQLite table you want synced. This 
     "PrimaryKey":       "your_id_column",
     "InjectStationId":  true,
     "TimestampColumns": ["created_at"],
-    "BooleanColumns":   []
+    "BooleanColumns":   [],
+    "ConflictStrategy": "nothing"
   }
 ]
 ```
@@ -119,10 +119,17 @@ Add one entry to the `Tables` array for each SQLite table you want synced. This 
 |---|---|
 | `SourceTable` | Table name in the station SQLite database |
 | `TargetTable` | Destination on PostgreSQL, as `schema.table` |
-| `PrimaryKey` | Primary key column — used to prevent duplicate inserts on retry |
+| `PrimaryKey` | Single primary key column — used for duplicate detection |
+| `PrimaryKeys` | Array of columns for composite PKs: `["device_id","seq_no"]` — use instead of `PrimaryKey` |
+| `PrimaryKeySeparator` | Separator for composite PK values in `record_id` (default `\|`) |
 | `InjectStationId` | When `true`, adds `station_id` (from `Station.StationId`) to every insert |
 | `TimestampColumns` | SQLite TEXT columns that map to `TIMESTAMPTZ` on PostgreSQL |
 | `BooleanColumns` | SQLite `0`/`1` INTEGER columns that map to `BOOLEAN` on PostgreSQL |
+| `ExcludeColumns` | SQLite columns to omit from the PostgreSQL INSERT |
+| `ColumnMap` | Rename columns: `{"sqlite_name": "pg_name"}` |
+| `ConflictStrategy` | `"nothing"` (default) — ignore duplicates. `"update"` — upsert on conflict |
+| `SyncDeletes` | When `true`, propagate DELETEs to PostgreSQL via a delete-log table |
+| `DeleteLogTable` | Delete-log table name. Defaults to `"{SourceTable}_deletes"` |
 
 To add a table later — with no redeployment — append an entry here and restart the service.
 
@@ -166,10 +173,9 @@ A healthy startup looks like:
 
 ```
 [INF] SyncAgent starting. StationId=ST-01 SiteName=Building A — Bay 3 Interval=30s
-[INF] SQLite schema version OK: 1
-[INF] Table mappings loaded: your_table→schema.your_table
 [INF] PostgreSQL connection verified.
-[INF] SyncAgent startup complete. StationId=ST-01 SiteName=Building A — Bay 3
+[INF] Schema validation: all configured tables present.
+[INF] SyncAgent startup complete. StationId=ST-01
 ```
 
 Check the health file:
@@ -180,9 +186,17 @@ Get-Content "C:\<path-to-your>\sync-health.json" | ConvertFrom-Json
 
 ```json
 {
-  "postgresReachable": true,
-  "pendingCount":      0,
-  "deadLetterCount":   0
+  "stationId":            "ST-01",
+  "lastCycleAt":          "2026-06-10T08:00:01Z",
+  "lastSyncedAt":         null,
+  "pendingCount":         0,
+  "deadLetterCount":      0,
+  "postgresReachable":    true,
+  "infraDeferredCount":   0,
+  "syncedTotal":          0,
+  "lastCycleDurationMs":  45,
+  "agentVersion":         "1.2.0.0",
+  "tables": []
 }
 ```
 
@@ -201,6 +215,31 @@ Get-Content "C:\<path-to-your>\sync-health.json" | ConvertFrom-Json
 
 ---
 
+## Admin CLI
+
+SyncAgent includes admin commands that run once and exit. Stop the service first if you want to interact with the same SQLite file without WAL contention (though in practice the CLI is read-only for `--status`).
+
+```powershell
+cd "C:\Program Files\SyncAgent"
+
+# Print version
+.\SyncAgent.exe --version
+
+# Show per-table pending and dead-letter counts
+.\SyncAgent.exe --status
+
+# Reset all dead-letter records to pending
+.\SyncAgent.exe --reset-dead-letters
+
+# Reset dead-letters for one table only
+.\SyncAgent.exe --reset-dead-letters --table=measurements
+
+# Dry run — log what would sync without writing anything
+.\SyncAgent.exe --dry-run
+```
+
+---
+
 ## Updating to a New Version
 
 1. Stop the service: `sc.exe stop SyncAgent`
@@ -216,11 +255,14 @@ Get-Content "C:\<path-to-your>\sync-health.json" | ConvertFrom-Json
 **Service fails to start**
 Check the log file first. The most common causes:
 - `SQLitePath` does not exist — create and initialise the database (Step 2)
-- `schema_version` table missing — the SQLite migration script was not run, or was run against a different database file
-- PostgreSQL connection string is wrong — the service starts anyway and retries, so check `sync-health.json` for `postgresReachable: false`
+- `sync_status` table missing — the SQLite migration script was not run, or was run against a different database file
+- PostgreSQL connection string is wrong — the service starts anyway and retries; check `sync-health.json` for `postgresReachable: false`
+
+**Schema validation warnings at startup**
+SyncAgent logs `[WRN]` lines for any configured target table or column that is missing from PostgreSQL. Records will still be attempted, but they will fail with data errors. Fix the PostgreSQL schema or correct the table mapping, then restart.
 
 **`postgresReachable: false` in health file**
-Records are not lost — SyncAgent continues to buffer them in SQLite and will flush automatically when connectivity is restored. To diagnose:
+Records are not lost — SyncAgent continues to buffer them in SQLite and will flush automatically when connectivity is restored. Infrastructure failures (network down, connection refused) do **not** count toward `MaxRetries`, so records will never be dead-lettered due to network outages alone. To diagnose:
 - Confirm the station can reach the PostgreSQL server: `Test-NetConnection <host> -Port 5432`
 - Check firewall rules and VPN connection if applicable
 - Verify the connection string has the correct host, port, database name, and credentials
@@ -229,12 +271,12 @@ Records are not lost — SyncAgent continues to buffer them in SQLite and will f
 This is normal offline-operation behaviour. Records accumulate in SQLite while the server is unreachable. Once connectivity is restored SyncAgent flushes the backlog automatically, oldest records first.
 
 **Dead-letter records (`deadLetterCount > 0`)**
-A record failed to sync after 10 attempts and has been frozen to prevent infinite retries. The `failure_reason` column in `sync_status` shows the specific error. After fixing the root cause:
+A record failed to sync after `MaxRetries` attempts *due to data errors* (type mismatch, constraint violation) and has been frozen. The `failure_reason` column in `sync_status` shows the specific error. After fixing the root cause, use the CLI to reset:
 
-```sql
-UPDATE sync_status
-SET    synced = 0, retry_count = 0, next_attempt = NULL, failure_reason = NULL
-WHERE  synced = 2;
+```powershell
+.\SyncAgent.exe --reset-dead-letters
+# or for a specific table:
+.\SyncAgent.exe --reset-dead-letters --table=measurements
 ```
 
 Then restart the service:

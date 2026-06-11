@@ -11,7 +11,8 @@
     "IntervalSeconds": 30,
     "BatchSize": 100,
     "MaxRetries": 10,
-    "HealthFilePath": "./sync-health.json"
+    "HealthFilePath": "./sync-health.json",
+    "HealthEndpointPort": 9091
   },
   "Logging": {
     "LogPath": "./logs",
