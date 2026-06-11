@@ -121,8 +121,8 @@ try
             services.AddSingleton<SQLiteReader>();
             services.AddSingleton<PostgresWriter>();
             services.AddSingleton<RetryPolicy>();
-            services.AddSingleton<SyncOrchestrator>();
-            services.AddSingleton<HealthReporter>();
+            services.AddSingleton<ISyncOrchestrator, SyncOrchestrator>();
+            services.AddSingleton<IHealthReporter, HealthReporter>();
             services.AddHostedService<Worker>();
 
             // ── #14: HTTP health endpoint (enabled when port > 0) ─────────────

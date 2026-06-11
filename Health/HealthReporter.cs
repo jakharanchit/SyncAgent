@@ -7,7 +7,7 @@ using SyncAgent.Data.Models;
 
 namespace SyncAgent.Health;
 
-public sealed class HealthReporter
+public sealed class HealthReporter : IHealthReporter
 {
     private readonly string _healthFilePath;
     private readonly string _stationId;

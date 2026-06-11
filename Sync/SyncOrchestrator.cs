@@ -8,7 +8,7 @@ using SyncAgent.Data.Models;
 
 namespace SyncAgent.Sync;
 
-public sealed class SyncOrchestrator
+public sealed class SyncOrchestrator : ISyncOrchestrator
 {
     private readonly SQLiteReader                _reader;
     private readonly PostgresWriter              _writer;

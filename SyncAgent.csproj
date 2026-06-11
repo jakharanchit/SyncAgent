@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>SyncAgent</AssemblyName>
     <RootNamespace>SyncAgent</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Authors>OpCore</Authors>
     <Description>SyncAgent — SQLite to PostgreSQL background sync service for test stations</Description>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
@@ -14,6 +14,11 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
   </PropertyGroup>
+
+  <!-- Exclude the test project from the main build -->
+  <ItemGroup>
+    <Compile Remove="SyncAgent.Tests/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />

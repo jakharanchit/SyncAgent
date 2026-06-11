@@ -95,6 +95,7 @@ public static class CliRunner
         try
         {
             cfg = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("syncagent.json",      optional: false)
                 .AddJsonFile("syncagent.local.json", optional: true)
                 .AddEnvironmentVariables(prefix: "SYNCAGENT_")

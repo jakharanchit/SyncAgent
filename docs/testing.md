@@ -1,9 +1,28 @@
 # SyncAgent — Testing Guide
 
 **Component:** SyncAgent  
-**Version:** 1.2.0
+**Version:** 1.2.1
 
 This guide covers how to set up, inject test data, and verify SyncAgent behaviour across all scenarios on a development machine.
+
+## Automated Test Suite
+
+SyncAgent ships with a full automated test suite in `SyncAgent.Tests/`. Run it with:
+
+```powershell
+# All tests (requires Docker for Postgres integration/E2E tests)
+dotnet test SyncAgent.Tests/SyncAgent.Tests.csproj
+
+# Unit tests only (no Docker required)
+dotnet test SyncAgent.Tests/SyncAgent.Tests.csproj --filter "FullyQualifiedName~SyncAgent.Tests.Unit"
+
+# SQLite integration tests (no Docker required)
+dotnet test SyncAgent.Tests/SyncAgent.Tests.csproj --filter "FullyQualifiedName~SQLiteReaderTests"
+```
+
+The automated suite covers retry policy, config model, sync orchestration, SQLite reads, PostgreSQL writes, health file writing, HTTP health endpoint, and CLI commands — 124 tests total. The scenarios below complement the automated suite by validating end-to-end behaviour of the deployed service.
+
+---
 
 SyncAgent is table-agnostic — it syncs any SQLite tables you configure in the `Tables` array of `syncagent.json`. The scenarios below use the four example tables (`sessions`, `tests`, `measurements`, `audit_log`) from `sql/examples/`, but the steps and principles apply equally to any schema.
 
@@ -323,7 +342,7 @@ dotnet run --configuration Release
 Get-Content .\sync-health.json | ConvertFrom-Json
 ```
 
-Expected shape (v1.2.0):
+Expected shape (v1.2.1):
 ```json
 {
   "stationId":            "ST-TEST",
@@ -336,7 +355,7 @@ Expected shape (v1.2.0):
   "lastInfraErrorAt":     null,
   "syncedTotal":          4,
   "lastCycleDurationMs":  52,
-  "agentVersion":         "1.2.0.0",
+  "agentVersion":         "1.2.1.0",
   "tables": [
     { "name": "sessions",     "pending": 0, "deadLetter": 0 },
     { "name": "tests",        "pending": 0, "deadLetter": 0 },
@@ -515,7 +534,7 @@ dotnet run --configuration Release -- --reset-dead-letters --table=sessions
 > Use the packaged deliverable folder — the install script must sit next to `SyncAgent.exe`.
 
 ```powershell
-cd .\SyncAgent-v1.2.0-win-x64-selfcontained\
+cd .\SyncAgent-v1.2.1-win-x64-selfcontained\
 
 # Edit syncagent.json with real values before installing.
 

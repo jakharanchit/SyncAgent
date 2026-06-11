@@ -310,11 +310,20 @@ SyncAgent/
 │       ├── Records.cs                    ← GenericRecord, PendingDelete
 │       └── Results.cs                    ← FailureKind, WriteResult, CycleResult, TableSyncStats
 ├── Sync/
+│   ├── ISyncOrchestrator.cs              ← interface for Worker + test isolation
 │   ├── SyncOrchestrator.cs               ← read → write → mark cycle, delete cycle, dry-run
 │   └── RetryPolicy.cs                    ← backoff + dead-letter threshold
 ├── Health/
+│   ├── IHealthReporter.cs                ← interface for Worker + test isolation
 │   ├── HealthReporter.cs                 ← atomic sync-health.json writer
 │   └── HealthEndpoint.cs                 ← optional HTTP /health/ endpoint
+├── SyncAgent.Tests/                      ← automated test suite (124 tests, not in deliverable)
+│   ├── SyncAgent.Tests.csproj
+│   ├── Fixtures/                         ← SqliteFixture, PostgresFixture, TestHelpers
+│   ├── Unit/                             ← RetryPolicy, TableMap, WriteResult, Worker
+│   ├── Integration/                      ← SQLiteReader, PostgresWriter, SyncOrchestrator (E2E)
+│   ├── Health/                           ← HealthReporter, HealthEndpoint
+│   └── Cli/                              ← CliRunner
 ├── sql/
 │   ├── sqlite-syncagent.sql              ← run once per SQLite DB (SyncAgent infra only)
 │   └── examples/
@@ -324,7 +333,8 @@ SyncAgent/
     ├── deployment.md                     ← step-by-step Windows deployment walkthrough
     ├── linux-deployment.md               ← Linux / systemd deployment
     ├── labview.md                        ← LabVIEW integration guide
-    └── testing.md                        ← developer testing guide
+    ├── labview-testing-guide.md          ← LabVIEW test VI walkthrough (JDP Science libraries)
+    └── testing.md                        ← manual testing scenarios + automated test suite
 ```
 
 ## Deployment

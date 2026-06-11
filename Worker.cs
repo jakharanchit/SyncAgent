@@ -9,8 +9,8 @@ namespace SyncAgent;
 
 public sealed class Worker : BackgroundService
 {
-    private readonly SyncOrchestrator  _orchestrator;
-    private readonly HealthReporter    _health;
+    private readonly ISyncOrchestrator _orchestrator;
+    private readonly IHealthReporter   _health;
     private readonly SyncConfig        _config;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<Worker>   _logger;
@@ -19,8 +19,8 @@ public sealed class Worker : BackgroundService
     private long _syncedTotal;
 
     public Worker(
-        SyncOrchestrator orchestrator,
-        HealthReporter health,
+        ISyncOrchestrator orchestrator,
+        IHealthReporter health,
         SyncConfig config,
         IHostApplicationLifetime lifetime,
         ILogger<Worker> logger)

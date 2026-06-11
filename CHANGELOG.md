@@ -2,6 +2,24 @@
 
 All notable changes to OpCore SyncAgent are documented here.
 
+## [1.2.1] — 2026-06-11
+
+### Fixed
+
+- **`CliRunner` config lookup now resolves from the current working directory.** `ConfigurationBuilder` previously used `AppContext.BaseDirectory` (the temp extraction directory of the self-contained exe) when resolving `syncagent.json`. Added `.SetBasePath(Directory.GetCurrentDirectory())` so the CLI reads config from wherever the operator runs the command — matching the documented behaviour.
+
+### Added
+
+- **Comprehensive automated test suite** (`SyncAgent.Tests/`). 124 tests across unit, integration, E2E, health, and CLI layers covering all sync paths.
+  - Unit: `RetryPolicy` (11), `TableMap` (10), `WriteResult`/`CycleResult` (8), `Worker` loop mechanics (4)
+  - Integration: `SQLiteReader` (36), `PostgresWriter` (20) — Postgres tests use Testcontainers
+  - E2E: `SyncOrchestrator` golden path, infra/data failures, dead-letter, idempotency, delete propagation, pruning, startup validation (14)
+  - Health: `HealthReporter` atomic writes + field coverage (7), `HealthEndpoint` HTTP (5)
+  - CLI: `CliRunner` status and reset-dead-letters (4)
+- **`ISyncOrchestrator` and `IHealthReporter` interfaces** extracted from the concrete classes. `Worker` now depends on the interfaces, enabling unit tests without Docker. No behaviour change — DI wires the same concrete implementations.
+
+---
+
 ## [1.2.0] — 2026-06-10
 
 ### Added
